@@ -363,5 +363,6 @@ MigrationBackup/
 FodyWeavers.xsd
 
 # Runtime configuration
+gcodes/
 jobQueue.json
 printers.json
