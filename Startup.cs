@@ -28,7 +28,7 @@ namespace DuetPrintFarm
         public void ConfigureServices(IServiceCollection services)
         {
 #if DEBUG
-            services.AddCors();
+            services.AddCors(options => options.AddDefaultPolicy(configurePolicy => configurePolicy.AllowAnyHeader().AllowAnyMethod().AllowAnyOrigin()));
 #endif
             services.AddControllers();
         }
@@ -41,12 +41,19 @@ namespace DuetPrintFarm
                 app.UseDeveloperExceptionPage();
             }
 
+            // Use default files
+            app.UseDefaultFiles();
+            app.UseStaticFiles();
+
             // Set flags to act as a reverse proxy for Apache or nginx
             app.UseForwardedHeaders(new ForwardedHeadersOptions
             {
                 ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
             });
             app.UseRouting();
+#if DEBUG
+            app.UseCors();
+#endif
 
             // Define endpoints
             app.UseEndpoints(endpoints =>

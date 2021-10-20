@@ -6,6 +6,8 @@ using Nito.AsyncEx;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -41,12 +43,40 @@ namespace DuetPrintFarm.Services
         /// </summary>
         /// <param name="cancellationToken">Cancellation token</param>
         /// <returns>Disposable lock</returns>
-        public static AwaitableDisposable<IDisposable> LockAsync(CancellationToken cancellationToken) => _lock.LockAsync(cancellationToken);
+        public static AwaitableDisposable<IDisposable> LockAsync(CancellationToken cancellationToken = default) => _lock.LockAsync(cancellationToken);
 
         /// <summary>
         /// List of registered printer instances
         /// </summary>
         public static List<Printer> Printers { get; } = new();
+
+        /// <summary>
+        /// Get all jobs as JSON
+        /// </summary>
+        /// <returns>JSON array</returns>
+        public static string GetJson()
+        {
+            using MemoryStream jsonStream = new();
+
+            // Write JSON
+            using (Utf8JsonWriter writer = new(jsonStream))
+            {
+                writer.WriteStartArray();
+                foreach (Printer printer in Printers)
+                {
+                    lock (printer)
+                    {
+                        JsonSerializer.Serialize(writer, printer);
+                    }
+                }
+                writer.WriteEndArray();
+            }
+
+            // Get it as a string
+            using StreamReader reader = new(jsonStream, Encoding.UTF8);
+            jsonStream.Seek(0, SeekOrigin.Begin);
+            return reader.ReadToEnd();
+        }
 
         /// <summary>
         /// Add a new printer
@@ -159,7 +189,16 @@ namespace DuetPrintFarm.Services
                 sessionTasks.Add(printer.SessionTask);
                 await printer.DisposeAsync();
             }
-            await Task.WhenAll(sessionTasks);
+
+            // Wait for each session to terminate
+            try
+            {
+                await Task.WhenAll(sessionTasks);
+            }
+            catch (OperationCanceledException)
+            {
+                // can be expected
+            }
 
             // Log this
             _logger.LogInformation("Printer manager stopped");

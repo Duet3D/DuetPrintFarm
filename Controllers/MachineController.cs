@@ -143,7 +143,7 @@ namespace DuetPrintFarm.Controllers
                 }
 
                 // Enqueue it
-                await JobManager.Enqueue(new Job() { Filename = resolvedPath });
+                await JobManager.Enqueue(new Job() { AbsoluteFilename = resolvedPath });
 
                 return Created(HttpUtility.UrlPathEncode(filename), null);
             }
