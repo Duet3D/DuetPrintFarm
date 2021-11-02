@@ -45,11 +45,7 @@ namespace DuetPrintFarm
             app.UseDefaultFiles();
             app.UseStaticFiles();
 
-            // Set flags to act as a reverse proxy for Apache or nginx
-            app.UseForwardedHeaders(new ForwardedHeadersOptions
-            {
-                ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
-            });
+            // Use default routing and CORS in dev mode
             app.UseRouting();
 #if DEBUG
             app.UseCors();

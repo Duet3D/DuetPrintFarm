@@ -32,6 +32,14 @@ namespace DuetPrintFarm.Model
         private DuetHttpSession _session;
 
         /// <summary>
+        /// Current status of the machine
+        /// </summary>
+        public MachineStatus Status
+        {
+            get => _session.Model.State.Status;
+        }
+
+        /// <summary>
         /// Indicates if this machine is online
         /// </summary>
         public bool Online { get; private set; }
@@ -105,7 +113,7 @@ namespace DuetPrintFarm.Model
             {
                 try
                 {
-                    _session = await DuetHttpSession.ConnectAsync(new Uri($"http://{Hostname}"));
+                    _session = await DuetHttpSession.ConnectAsync(new Uri($"http://{Hostname}"), cancellationToken: _disposedTCS.Token);
                 }
                 catch (Exception)
                 {
@@ -160,7 +168,7 @@ namespace DuetPrintFarm.Model
                                 {
                                     Job.Progress = (double)_session.Model.Job.FilePosition / _session.Model.Job.File.Size;
                                 }
-                                else
+                                else if (_session.Model.State.Status == MachineStatus.Idle)
                                 {
                                     Job.Progress = null;
                                 }
@@ -186,12 +194,6 @@ namespace DuetPrintFarm.Model
                             _logger.LogInformation("Printer {0} is no longer printing", Hostname);
                         }
                         machinePrinting.Reset();
-
-#warning MachineStatus.off is not valid for real use-cases, but useful for bench setups
-                        if (_session.Model.State.Status == MachineStatus.Off)
-                        {
-                            machineIdle.Set();
-                        }
                     }
                     else
                     {
@@ -203,12 +205,6 @@ namespace DuetPrintFarm.Model
                             _logger.LogInformation("Printer {0} is printing {1}", Hostname, JobFile);
                         }
                         machinePrinting.Set();
-
-#warning MachineStatus.off is not valid for real use-cases, but useful for bench setups
-                        if (_session.Model.State.Status == MachineStatus.Off)
-                        {
-                            machineIdle.Reset();
-                        }
                     }
                 }
             };
@@ -218,7 +214,10 @@ namespace DuetPrintFarm.Model
             {
                 if (e.PropertyName == nameof(ObjectModel.State.Status))
                 {
-                    bool isOnline = (_session.Model.State.Status != MachineStatus.Starting) && (_session.Model.State.Status != MachineStatus.Disconnected);
+                    bool isOnline = (_session.Model.State.Status != MachineStatus.Starting) &&
+                                    (_session.Model.State.Status != MachineStatus.Halted) &&
+                                    (_session.Model.State.Status != MachineStatus.Updating) &&
+                                    (_session.Model.State.Status != MachineStatus.Disconnected);
                     lock (this)
                     {
                         if (Online != isOnline)
@@ -227,9 +226,7 @@ namespace DuetPrintFarm.Model
                             _logger.LogInformation("Printer {0} is now {1}", Hostname, isOnline ? "online" : "offline");
                         }
                     }
-
-#warning MachineStatus.off is not valid for real use-cases, but useful for bench setups
-                    if (_session.Model.State.Status == MachineStatus.Idle || (_session.Model.State.Status == MachineStatus.Off && _session.Model.Job.File.FileName == null))
+                    if (_session.Model.State.Status == MachineStatus.Idle)
                     {
                         machineIdle.Set();
                     }
@@ -240,6 +237,7 @@ namespace DuetPrintFarm.Model
                 }
             };
 
+            Job job = null;
             bool wasPrinting = false;
             do
             {
@@ -247,7 +245,6 @@ namespace DuetPrintFarm.Model
                 await machineIdle.WaitAsync(_disposedTCS.Token);
 
                 // Try to get the next job
-                Job job = null;
                 if (wasPrinting)
                 {
                     using CancellationTokenSource cts = CancellationTokenSource.CreateLinkedTokenSource(_disposedTCS.Token);
@@ -261,6 +258,10 @@ namespace DuetPrintFarm.Model
                     {
                         try
                         {
+                            lock (job)
+                            {
+                                job.Progress = 1;
+                            }
                             await SendCode("M98 P\"queue-end.g\"");
                             _logger.LogInformation("Print queue complete on {0}", Hostname);
                         }
@@ -268,6 +269,7 @@ namespace DuetPrintFarm.Model
                         {
                             _logger.LogError(e, "Failed to end print queue on {0}", Hostname);
                         }
+                        job = null;
                     }
                 }
                 else
@@ -292,6 +294,10 @@ namespace DuetPrintFarm.Model
                 lock (job)
                 {
                     job.Hostname = Hostname;
+                    lock (this)
+                    {
+                        JobFile = job.Filename;
+                    }
                 }
                 _logger.LogInformation("Got {0} print job {1} for {2}", wasPrinting ? "next" : "new", job.Filename, Hostname);
 
@@ -306,6 +312,10 @@ namespace DuetPrintFarm.Model
                     _logger.LogDebug("Upload complete, running queue macro file and starting print");
 
                     // Run the corresponding macro file and start the next print file
+                    lock (job)
+                    {
+                        job.Progress = 0;
+                    }
                     await SendCode($"M98 P\"{(wasPrinting ? "queue-intermediate.g" : "queue-start.g")}\"");
                     await SendCode($"M32 \"{job.Filename}\"");
                     wasPrinting = true;

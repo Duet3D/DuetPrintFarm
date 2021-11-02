@@ -2,6 +2,13 @@
 
   <PropertyGroup>
     <TargetFramework>net5.0</TargetFramework>
+    <PackageLicenseExpression>GPL-3.0</PackageLicenseExpression>
+    <Authors>Christian Hammacher</Authors>
+    <Company>Duet3D Ltd</Company>
+    <Copyright>Duet3D Ltd</Copyright>
+    <PackageProjectUrl>https://github.com/Duet3D/DuetPrintFarm</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/Duet3D/DuetPrintFarm.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
   </PropertyGroup>
 
   <ItemGroup>
@@ -9,13 +16,21 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="DuetHttpClient" Version="3.4.0-b5" />
     <PackageReference Include="Nito.AsyncEx" Version="5.1.2" />
     <PackageReference Include="System.Threading.Channels" Version="5.0.0" />
   </ItemGroup>
 
   <ItemGroup>
     <Folder Include="wwwroot\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="DuetAPI">
+      <HintPath>..\DuetSoftwareFramework\src\DuetAPI\bin\Debug\net5.0\DuetAPI.dll</HintPath>
+    </Reference>
+    <Reference Include="DuetHttpClient">
+      <HintPath>..\DuetSoftwareFramework\src\DuetHttpClient\bin\Debug\net5.0\DuetHttpClient.dll</HintPath>
+    </Reference>
   </ItemGroup>
 
 </Project>

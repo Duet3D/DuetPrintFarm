@@ -190,7 +190,7 @@ namespace DuetPrintFarm.Services
                     job.TimeLeft = null;
                     if (job.TimeCompleted == null)
                     {
-                        await Enqueue(job);
+                        await Enqueue(job, cancellationToken);
                     }
                 }
             }
