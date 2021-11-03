@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using System.Web;
 using DuetPrintFarm.Model;
 using DuetPrintFarm.Services;
+using DuetPrintFarm.Singletons;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -21,6 +22,28 @@ namespace DuetPrintFarm.Controllers
         /// App configuration
         /// </summary>
         private readonly IConfiguration _configuration;
+
+        /// <summary>
+        /// Logger instance
+        /// </summary>
+        private readonly ILogger _logger;
+
+        /// <summary>
+        /// Job queue
+        /// </summary>
+        private readonly IJobQueue _jobQueue;
+
+        /// <summary>
+        /// Create a new controller instance
+        /// </summary>
+        /// <param name="configuration">Launch configuration</param>
+        /// <param name="logger">Logger instance</param>
+        public MachineController(IConfiguration configuration, ILogger<MachineController> logger, IJobQueue jobQueue)
+        {
+            _configuration = configuration;
+            _logger = logger;
+            _jobQueue = jobQueue;
+        }
 
         /// <summary>
         /// Directory where G-code files are placed
@@ -53,22 +76,6 @@ namespace DuetPrintFarm.Controllers
             // Return combined path
             string gcodesDirectory = _configuration.GetValue<string>("gcodesDirectory");
             return Path.Combine(gcodesDirectory, path);
-        }
-
-        /// <summary>
-        /// Logger instance
-        /// </summary>
-        private readonly ILogger _logger;
-
-        /// <summary>
-        /// Create a new controller instance
-        /// </summary>
-        /// <param name="configuration">Launch configuration</param>
-        /// <param name="logger">Logger instance</param>
-        public MachineController(IConfiguration configuration, ILogger<MachineController> logger)
-        {
-            _configuration = configuration;
-            _logger = logger;
         }
 
         #region File requests
@@ -143,7 +150,10 @@ namespace DuetPrintFarm.Controllers
                 }
 
                 // Enqueue it
-                await JobManager.Enqueue(new Job() { AbsoluteFilename = resolvedPath });
+                using (await _jobQueue.LockAsync())
+                {
+                    await _jobQueue.EnqueueAsync(new Job() { AbsoluteFilename = resolvedPath });
+                }
 
                 return Created(HttpUtility.UrlPathEncode(filename), null);
             }

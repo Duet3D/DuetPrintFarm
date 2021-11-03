@@ -1,13 +1,12 @@
 ﻿using DuetPrintFarm.Model;
+using DuetPrintFarm.Singletons;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Nito.AsyncEx;
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Text;
-using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -24,118 +23,42 @@ namespace DuetPrintFarm.Services
         private readonly IConfiguration _configuration;
 
         /// <summary>
+        /// Logger instance
+        /// </summary>
+        private readonly ILogger<PrinterManager> _logger;
+
+        /// <summary>
+        /// Service provider instance
+        /// </summary>
+        private readonly IServiceProvider _provider;
+
+        /// <summary>
+        /// List of printers
+        /// </summary>
+        private readonly IPrinterList _printerList;
+
+        /// <summary>
+        /// List of printer sessions
+        /// </summary>
+        private readonly List<PrinterSession> _printerSessions = new();
+
+        /// <summary>
         /// File where the job queue is stored
         /// </summary>
         private string PrintersFile { get => _configuration.GetValue<string>("PrintersFile"); }
-
-        /// <summary>
-        /// Logger instance
-        /// </summary>
-        private static ILogger<PrinterManager> _logger;
-
-        /// <summary>
-        /// Lock for concurrent access to the printer list
-        /// </summary>
-        private static readonly AsyncLock _lock = new();
-
-        /// <summary>
-        /// Lock access to the printers
-        /// </summary>
-        /// <param name="cancellationToken">Cancellation token</param>
-        /// <returns>Disposable lock</returns>
-        public static AwaitableDisposable<IDisposable> LockAsync(CancellationToken cancellationToken = default) => _lock.LockAsync(cancellationToken);
-
-        /// <summary>
-        /// List of registered printer instances
-        /// </summary>
-        public static List<Printer> Printers { get; } = new();
-
-        /// <summary>
-        /// Get all jobs as JSON
-        /// </summary>
-        /// <returns>JSON array</returns>
-        public static string GetJson()
-        {
-            using MemoryStream jsonStream = new();
-
-            // Write JSON
-            using (Utf8JsonWriter writer = new(jsonStream))
-            {
-                writer.WriteStartArray();
-                foreach (Printer printer in Printers)
-                {
-                    lock (printer)
-                    {
-                        JsonSerializer.Serialize(writer, printer);
-                    }
-                }
-                writer.WriteEndArray();
-            }
-
-            // Get it as a string
-            using StreamReader reader = new(jsonStream, Encoding.UTF8);
-            jsonStream.Seek(0, SeekOrigin.Begin);
-            return reader.ReadToEnd();
-        }
-
-        /// <summary>
-        /// Add a new printer
-        /// </summary>
-        /// <param name="hostname">Hostname to add</param>
-        /// <returns>Asynchronous task</returns>
-        public static async Task AddPrinter(string hostname, CancellationToken cancellationToken = default)
-        {
-            using (await _lock.LockAsync(cancellationToken))
-            {
-                foreach (Printer printer in Printers)
-                {
-                    if (printer.Hostname == hostname)
-                    {
-                        // Don't add the same printer twice
-                        return;
-                    }
-                }
-
-                Printers.Add(new Printer(hostname, _logger));
-                _logger.LogInformation("Printer {0} added", hostname);
-            }
-        }
-
-        /// <summary>
-        /// Delete an existing printer
-        /// </summary>
-        /// <param name="hostname">Hostname to delete</param>
-        /// <returns>Asynchronous task</returns>
-        public static async Task DeletePrinter(string hostname, CancellationToken cancellationToken = default)
-        {
-            using (await _lock.LockAsync(cancellationToken))
-            {
-                foreach (Printer printer in Printers)
-                {
-                    if (printer.Hostname == hostname)
-                    {
-                        if (printer.Job != null)
-                        {
-                            // Enqueue the printer's current job again so it doesn't get lost
-                            await JobManager.Enqueue(printer.Job, cancellationToken);
-                        }
-
-                        Printers.Remove(printer);
-                        break;
-                    }
-                }
-            }
-        }
 
         /// <summary>
         /// Constructor of this service class
         /// </summary>
         /// <param name="configuration">App configuration</param>
         /// <param name="logger">Logger instance</param>
-        public PrinterManager(IConfiguration configuration, ILogger<PrinterManager> logger)
+        /// <param name="printerList">List of configured printers</param>
+        public PrinterManager(IConfiguration configuration, ILogger<PrinterManager> logger, IServiceProvider provider, IPrinterList printerList)
         {
-            _logger = logger;
             _configuration = configuration;
+            _logger = logger;
+            _provider = provider;
+            _printerList = printerList;
         }
 
         /// <summary>
@@ -145,23 +68,78 @@ namespace DuetPrintFarm.Services
         /// <returns>Asynchronous task</returns>
         public async Task StartAsync(CancellationToken cancellationToken)
         {
+            _printerList.OnPrinterAdded += PrinterAdded;
+            _printerList.OnPrinterSuspended += PrinterSuspended;
+            _printerList.OnPrinterResumed += PrinterResumed;
+            _printerList.OnPrinterRemoved += PrinterRemoved;
+
             // Load the configured printers if possible
             if (File.Exists(PrintersFile))
             {
-                using FileStream fs = new(PrintersFile, FileMode.Open, FileAccess.Read);
-                using StreamReader reader = new(fs);
-                using (await _lock.LockAsync(cancellationToken))
+                using (await _printerList.LockAsync(cancellationToken))
                 {
-                    while (!reader.EndOfStream)
-                    {
-                        string hostname = await reader.ReadLineAsync();
-                        Printers.Add(new Printer(hostname, _logger));
-                    }
+                    await _printerList.LoadFromFileAsync(PrintersFile, cancellationToken);
+                }
+                _logger.LogInformation("Printers loaded from {0}", PrintersFile);
+            }
+        }
+
+        /// <summary>
+        /// Called when a printer has been added
+        /// </summary>
+        /// <param name="printer">New printer</param>
+        private void PrinterAdded(Printer printer)
+        {
+            PrinterSession session = ActivatorUtilities.CreateInstance<PrinterSession>(_provider, printer);
+            _printerSessions.Add(session);
+        }
+
+        /// <summary>
+        /// Called when a printer has been suspended
+        /// </summary>
+        /// <param name="printer">Resumed printer</param>
+        private void PrinterSuspended(Printer printer)
+        {
+            foreach (PrinterSession session in _printerSessions)
+            {
+                if (session.Printer == printer)
+                {
+                    session.Suspend();
+                    break;
                 }
             }
+        }
 
-            // Log this
-            _logger.LogInformation("Printer manager started");
+        /// <summary>
+        /// Called when a printer has been resumed (i.e. it is no longer paused)
+        /// </summary>
+        /// <param name="printer">Resumed printer</param>
+        private void PrinterResumed(Printer printer)
+        {
+            foreach (PrinterSession session in _printerSessions)
+            {
+                if (session.Printer == printer)
+                {
+                    session.Resume();
+                    break;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Called when a printer has been removed
+        /// </summary>
+        /// <param name="printer">Deleted printer</param>
+        private async void PrinterRemoved(Printer printer)
+        {
+            foreach (PrinterSession session in _printerSessions)
+            {
+                if (session.Printer == printer)
+                {
+                    _printerSessions.Remove(session);
+                    await session.DisposeAsync();
+                }
+            }
         }
 
         /// <summary>
@@ -171,26 +149,27 @@ namespace DuetPrintFarm.Services
         /// <returns>Asynchronous task</returns>
         public async Task StopAsync(CancellationToken cancellationToken)
         {
+            _printerList.OnPrinterAdded -= PrinterAdded;
+            _printerList.OnPrinterSuspended -= PrinterSuspended;
+            _printerList.OnPrinterResumed -= PrinterResumed;
+            _printerList.OnPrinterRemoved -= PrinterRemoved;
+
             // Save the list of printers again
-            using FileStream fs = new(PrintersFile, FileMode.Create, FileAccess.Write);
-            using StreamWriter writer = new(fs);
-            using (await _lock.LockAsync(cancellationToken))
+            using (await _printerList.LockAsync(cancellationToken))
             {
-                foreach (Printer printer in Printers)
-                {
-                    await writer.WriteLineAsync(printer.Hostname);
-                }
+                await _printerList.SaveToFileAsync(PrintersFile, cancellationToken);
+                _logger.LogInformation("Printers saved to {0}", PrintersFile);
             }
 
             // Disconnect all the sessions again
             List<Task> sessionTasks = new();
-            foreach (Printer printer in Printers)
+            foreach (PrinterSession session in _printerSessions)
             {
-                sessionTasks.Add(printer.SessionTask);
-                await printer.DisposeAsync();
+                sessionTasks.Add(session.Task);
+                await session.DisposeAsync();
             }
 
-            // Wait for each session to terminate
+            // Wait for every session to terminate
             try
             {
                 await Task.WhenAll(sessionTasks);
@@ -201,7 +180,7 @@ namespace DuetPrintFarm.Services
             }
 
             // Log this
-            _logger.LogInformation("Printer manager stopped");
+            _logger.LogInformation("Printers disconnected");
         }
     }
 }

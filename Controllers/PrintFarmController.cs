@@ -1,12 +1,10 @@
 ﻿using System;
 using System.IO;
-using System.Net.Http.Headers;
-using System.Text;
-using System.Text.Json;
 using System.Threading.Tasks;
 using System.Web;
 using DuetPrintFarm.Model;
 using DuetPrintFarm.Services;
+using DuetPrintFarm.Singletons;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -36,16 +34,29 @@ namespace DuetPrintFarm.Controllers
         private readonly ILogger _logger;
 
         /// <summary>
+        /// Job queue instance
+        /// </summary>
+        private readonly IJobQueue _jobQueue;
+
+        /// <summary>
+        /// Printer list
+        /// </summary>
+        private readonly IPrinterList _printerList;
+
+        /// <summary>
         /// Create a new controller instance
         /// </summary>
         /// <param name="configuration">Launch configuration</param>
         /// <param name="logger">Logger instance</param>
-        public PrintFarmController(IConfiguration configuration, ILogger<MachineController> logger)
+        public PrintFarmController(IConfiguration configuration, ILogger<MachineController> logger, IJobQueue jobQueue, IPrinterList printerList)
         {
             _configuration = configuration;
             _logger = logger;
+            _jobQueue = jobQueue;
+            _printerList = printerList;
         }
 
+        #region Job Queue Requests
         /// <summary>
         /// GET /printFarm/queue
         /// Retrieve the current print jobs
@@ -57,94 +68,9 @@ namespace DuetPrintFarm.Controllers
         [HttpGet("queue")]
         public async Task<IActionResult> Queue()
         {
-            using (await JobManager.LockAsync())
+            using (await _jobQueue.LockAsync())
             {
-                return Content(JobManager.GetJson(), "application/json");
-            }
-        }
-
-        /// <summary>
-        /// GET /printFarm/printers
-        /// Retrieve the configured printers
-        /// </summary>
-        /// <returns>
-        /// HTTP status code:
-        /// (200) Printer List (JSON)
-        /// </returns>
-        [HttpGet("printers")]
-        public async Task<IActionResult> Printers()
-        {
-            using (await PrinterManager.LockAsync())
-            {
-                return Content(PrinterManager.GetJson(), "application/json");
-            }
-        }
-
-        /// <summary>
-        /// PUT /printFarm/printer?hostname={hostname}
-        /// Add a new printer
-        /// </summary>
-        /// <returns>
-        /// HTTP status code:
-        /// (204) No Content
-        /// (400) Invalid parameters
-        /// (500) Generic error occurred
-        /// </returns>
-        [HttpPut("printer")]
-        public async Task<IActionResult> AddPrinter(string hostname)
-        {
-            if (string.IsNullOrWhiteSpace(hostname))
-            {
-                return BadRequest();
-            }
-
-            try
-            {
-                await PrinterManager.AddPrinter(hostname);
-                return NoContent();
-            }
-            catch (Exception e)
-            {
-                if (e is AggregateException ae)
-                {
-                    e = ae.InnerException;
-                }
-                _logger.LogError(e, $"[{nameof(AddPrinter)}] Failed add printer {hostname}");
-                return StatusCode(500, e.Message);
-            }
-        }
-
-        /// <summary>
-        /// DELETE /printFarm/printer?hostname={hostname}
-        /// Add a new printer
-        /// </summary>
-        /// <returns>
-        /// HTTP status code:
-        /// (204) No Content
-        /// (400) Invalid parameters
-        /// (500) Generic error occurred
-        /// </returns>
-        [HttpDelete("printer")]
-        public async Task<IActionResult> DeletePrinter(string hostname)
-        {
-            if (string.IsNullOrWhiteSpace(hostname))
-            {
-                return BadRequest();
-            }
-
-            try
-            {
-                await PrinterManager.DeletePrinter(hostname);
-                return NoContent();
-            }
-            catch (Exception e)
-            {
-                if (e is AggregateException ae)
-                {
-                    e = ae.InnerException;
-                }
-                _logger.LogError(e, $"[{nameof(DeletePrinter)}] Failed delete printer {hostname}");
-                return StatusCode(500, e.Message);
+                return Content(_jobQueue.ToJson(), "application/json");
             }
         }
 
@@ -180,7 +106,10 @@ namespace DuetPrintFarm.Controllers
                 }
 
                 // Enqueue it
-                await JobManager.Enqueue(new Job() { AbsoluteFilename = resolvedPath });
+                using (await _jobQueue.LockAsync())
+                {
+                    await _jobQueue.EnqueueAsync(new Job() { AbsoluteFilename = resolvedPath });
+                }
 
                 return Created(HttpUtility.UrlPathEncode(filename), null);
             }
@@ -190,16 +119,222 @@ namespace DuetPrintFarm.Controllers
                 {
                     e = ae.InnerException;
                 }
-                _logger.LogWarning(e, $"[{nameof(AddFile)} Failed upload file {filename} (resolved to {resolvedPath})");
+                _logger.LogWarning(e, $"[{nameof(AddFile)}] Failed upload file {filename} (resolved to {resolvedPath})");
+                return StatusCode(500, e.Message);
+            }
+        }
+
+        /// <summary>
+        /// POST /printFarm/pause?filename={filename}
+        /// - or -
+        /// POST /printFarm/pause?index={index}
+        /// Pause a job file from the queue
+        /// </summary>
+        /// <param name="filename">Filename to pause</param>
+        /// <param name="filename">Job index to pause</param>
+        /// <returns>
+        /// HTTP status code:
+        /// (204) No Content
+        /// (400) Invalid parameters
+        /// (500) Generic error occurred
+        /// </returns>
+        [HttpPost("pause")]
+        public async Task<IActionResult> PauseFile(string filename, int? index)
+        {
+            if (string.IsNullOrWhiteSpace(filename) && index == null)
+            {
+                return BadRequest();
+            }
+
+            string resolvedPath = "n/a";
+            try
+            {
+                using (await _jobQueue.LockAsync())
+                {
+                    if (filename != null)
+                    {
+                        resolvedPath = Path.Combine(GCodesDirectory, filename);
+                        await _jobQueue.PauseAsync(filename);
+                    }
+                    else
+                    {
+                        resolvedPath = $"Job #{index}";
+                        await _jobQueue.PauseAsync(index.Value);
+                    }
+                }
+                return NoContent();
+            }
+            catch (Exception e)
+            {
+                if (e is AggregateException ae)
+                {
+                    e = ae.InnerException;
+                }
+                _logger.LogWarning(e, $"[{nameof(PauseFile)}] Failed pause file {filename ?? index.ToString()} (resolved to {resolvedPath})");
+                return StatusCode(500, e.Message);
+            }
+        }
+
+        /// <summary>
+        /// POST /printFarm/resume?filename={filename}
+        /// - or -
+        /// POST /printFarm/resume?index={index}
+        /// Resume a job file from the queue
+        /// </summary>
+        /// <param name="filename">Filename to resume</param>
+        /// <param name="filename">Job index to resume</param>
+        /// <returns>
+        /// HTTP status code:
+        /// (204) No Content
+        /// (400) Invalid parameters
+        /// (500) Generic error occurred
+        /// </returns>
+        [HttpPost("resume")]
+        public async Task<IActionResult> ResumeFile(string filename, int? index)
+        {
+            if (string.IsNullOrWhiteSpace(filename) && index == null)
+            {
+                return BadRequest();
+            }
+
+            string resolvedPath = "n/a";
+            try
+            {
+                using (await _jobQueue.LockAsync())
+                {
+                    if (filename != null)
+                    {
+                        resolvedPath = Path.Combine(GCodesDirectory, filename);
+                        await _jobQueue.ResumeAsync(filename);
+                    }
+                    else
+                    {
+                        resolvedPath = $"Job #{index}";
+                        await _jobQueue.ResumeAsync(index.Value);
+                    }
+                }
+                return NoContent();
+            }
+            catch (Exception e)
+            {
+                if (e is AggregateException ae)
+                {
+                    e = ae.InnerException;
+                }
+                _logger.LogWarning(e, $"[{nameof(ResumeFile)}] Failed resume file {filename ?? index.ToString()} (resolved to {resolvedPath})");
+                return StatusCode(500, e.Message);
+            }
+        }
+
+        /// <summary>
+        /// POST /printFarm/cancel?filename={filename}
+        /// - or -
+        /// POST /printFarm/cancel?index={index}
+        /// Cancel a job file from the queue
+        /// </summary>
+        /// <param name="filename">Filename to cancel</param>
+        /// <param name="filename">Job index to cancel</param>
+        /// <returns>
+        /// HTTP status code:
+        /// (204) No Content
+        /// (400) Invalid parameters
+        /// (500) Generic error occurred
+        /// </returns>
+        [HttpPost("cancel")]
+        public async Task<IActionResult> CancelFile(string filename, int? index)
+        {
+            if (string.IsNullOrWhiteSpace(filename) && index == null)
+            {
+                return BadRequest();
+            }
+
+            string resolvedPath = "n/a";
+            try
+            {
+                using (await _jobQueue.LockAsync())
+                {
+                    if (filename != null)
+                    {
+                        resolvedPath = Path.Combine(GCodesDirectory, filename);
+                        await _jobQueue.CancelAsync(filename);
+                    }
+                    else
+                    {
+                        resolvedPath = $"Job #{index}";
+                        await _jobQueue.CancelAsync(index.Value);
+                    }
+                }
+                return NoContent();
+            }
+            catch (Exception e)
+            {
+                if (e is AggregateException ae)
+                {
+                    e = ae.InnerException;
+                }
+                _logger.LogWarning(e, $"[{nameof(CancelFile)}] Failed cancel file {filename ?? index.ToString()} (resolved to {resolvedPath})");
+                return StatusCode(500, e.Message);
+            }
+        }
+
+        /// <summary>
+        /// POST /printFarm/repeat?filename={filename}
+        /// - or -
+        /// POST /printFarm/repeat?index={index}
+        /// Repeat a job file from the queue
+        /// </summary>
+        /// <param name="filename">Filename to repeat</param>
+        /// <param name="filename">Job index to repeat</param>
+        /// <returns>
+        /// HTTP status code:
+        /// (204) No Content
+        /// (400) Invalid parameters
+        /// (500) Generic error occurred
+        /// </returns>
+        [HttpPost("repeat")]
+        public async Task<IActionResult> RepeatFile(string filename, int? index)
+        {
+            if (string.IsNullOrWhiteSpace(filename) && index == null)
+            {
+                return BadRequest();
+            }
+
+            string resolvedPath = "n/a";
+            try
+            {
+                using (await _jobQueue.LockAsync())
+                {
+                    if (filename != null)
+                    {
+                        await _jobQueue.RepeatAsync(filename);
+                    }
+                    else
+                    {
+                        resolvedPath = $"Job #{index}";
+                        await _jobQueue.RepeatAsync(index.Value);
+                    }
+                }
+                return NoContent();
+            }
+            catch (Exception e)
+            {
+                if (e is AggregateException ae)
+                {
+                    e = ae.InnerException;
+                }
+                _logger.LogWarning(e, $"[{nameof(RepeatFile)}] Failed repeat file {filename ?? index.ToString()} (resolved to {resolvedPath})");
                 return StatusCode(500, e.Message);
             }
         }
 
         /// <summary>
         /// DELETE /printFarm/job?filename={filename}
-        /// Remove a queued job file
+        /// - or -
+        /// DELETE /printFarm/job?index={index}
+        /// Remove a job file from the queue
         /// </summary>
         /// <param name="filename">Filename to remove</param>
+        /// <param name="filename">Job index to remove</param>
         /// <returns>
         /// HTTP status code:
         /// (204) No Content
@@ -217,17 +352,19 @@ namespace DuetPrintFarm.Controllers
             string resolvedPath = "n/a";
             try
             {
-                if (filename != null)
+                using (await _jobQueue.LockAsync())
                 {
-                    resolvedPath = Path.Combine(GCodesDirectory, filename);
-                    await JobManager.Remove(filename);
+                    if (filename != null)
+                    {
+                        resolvedPath = Path.Combine(GCodesDirectory, filename);
+                        await _jobQueue.RemoveAsync(filename);
+                    }
+                    else
+                    {
+                        resolvedPath = $"Job #{index}";
+                        await _jobQueue.RemoveAsync(index.Value);
+                    }
                 }
-                else
-                {
-                    resolvedPath = $"Job #{index}";
-                    await JobManager.Remove(index.Value);
-                }
-
                 return NoContent();
             }
             catch (Exception e)
@@ -236,9 +373,195 @@ namespace DuetPrintFarm.Controllers
                 {
                     e = ae.InnerException;
                 }
-                _logger.LogWarning(e, $"[{nameof(AddFile)} Failed remove file {filename ?? index.ToString()} (resolved to {resolvedPath})");
+                _logger.LogWarning(e, $"[{nameof(RemoveFile)}] Failed remove file {filename ?? index.ToString()} (resolved to {resolvedPath})");
                 return StatusCode(500, e.Message);
             }
         }
+
+        /// <summary>
+        /// GET /printFarm/cleanUp
+        /// Clean up finished print jobs
+        /// </summary>
+        /// <returns>
+        /// HTTP status code:
+        /// (204) No Content
+        /// </returns>
+        [HttpPost("cleanUp")]
+        public async Task<IActionResult> CleanUp()
+        {
+            using (await _jobQueue.LockAsync())
+            {
+                _jobQueue.Clean();
+            }
+            return NoContent();
+        }
+        #endregion
+
+        #region Printer Requests
+        /// <summary>
+        /// GET /printFarm/printers
+        /// Retrieve the configured printers
+        /// </summary>
+        /// <returns>
+        /// HTTP status code:
+        /// (200) Printer List (JSON)
+        /// </returns>
+        [HttpGet("printers")]
+        public async Task<IActionResult> Printers()
+        {
+            using (await _printerList.LockAsync())
+            {
+                return Content(_printerList.ToJson(), "application/json");
+            }
+        }
+
+        /// <summary>
+        /// PUT /printFarm/printer?hostname={hostname}
+        /// Add a new printer
+        /// </summary>
+        /// <returns>
+        /// HTTP status code:
+        /// (204) No Content
+        /// (400) Invalid parameters
+        /// (500) Generic error occurred
+        /// </returns>
+        [HttpPut("printer")]
+        public async Task<IActionResult> AddPrinter(string hostname)
+        {
+            if (string.IsNullOrWhiteSpace(hostname))
+            {
+                return BadRequest();
+            }
+
+            try
+            {
+                using (await _printerList.LockAsync())
+                {
+                    _printerList.Add(hostname);
+                }
+                return NoContent();
+            }
+            catch (Exception e)
+            {
+                if (e is AggregateException ae)
+                {
+                    e = ae.InnerException;
+                }
+                _logger.LogError(e, $"[{nameof(AddPrinter)}] Failed add printer {hostname}");
+                return StatusCode(500, e.Message);
+            }
+        }
+
+        /// <summary>
+        /// POST /printFarm/suspendPrinter?hostname={hostname}
+        /// Suspend a printer
+        /// </summary>
+        /// <returns>
+        /// HTTP status code:
+        /// (204) No Content
+        /// (400) Invalid parameters
+        /// (500) Generic error occurred
+        /// </returns>
+        [HttpPost("suspendPrinter")]
+        public async Task<IActionResult> SuspendPrinter(string hostname)
+        {
+            if (string.IsNullOrWhiteSpace(hostname))
+            {
+                return BadRequest();
+            }
+
+            try
+            {
+                using (await _printerList.LockAsync())
+                {
+                    _printerList.Suspend(hostname);
+                }
+                return NoContent();
+            }
+            catch (Exception e)
+            {
+                if (e is AggregateException ae)
+                {
+                    e = ae.InnerException;
+                }
+                _logger.LogError(e, $"[{nameof(AddPrinter)}] Failed add printer {hostname}");
+                return StatusCode(500, e.Message);
+            }
+        }
+
+        /// <summary>
+        /// POST /printFarm/resumePrinter?hostname={hostname}
+        /// Resume normal printer operation
+        /// </summary>
+        /// <returns>
+        /// HTTP status code:
+        /// (204) No Content
+        /// (400) Invalid parameters
+        /// (500) Generic error occurred
+        /// </returns>
+        [HttpPost("resumePrinter")]
+        public async Task<IActionResult> ResumePrinter(string hostname)
+        {
+            if (string.IsNullOrWhiteSpace(hostname))
+            {
+                return BadRequest();
+            }
+
+            try
+            {
+                using (await _printerList.LockAsync())
+                {
+                    _printerList.Resume(hostname);
+                }
+                return NoContent();
+            }
+            catch (Exception e)
+            {
+                if (e is AggregateException ae)
+                {
+                    e = ae.InnerException;
+                }
+                _logger.LogError(e, $"[{nameof(AddPrinter)}] Failed add printer {hostname}");
+                return StatusCode(500, e.Message);
+            }
+        }
+
+        /// <summary>
+        /// DELETE /printFarm/printer?hostname={hostname}
+        /// Add a new printer
+        /// </summary>
+        /// <returns>
+        /// HTTP status code:
+        /// (204) No Content
+        /// (400) Invalid parameters
+        /// (500) Generic error occurred
+        /// </returns>
+        [HttpDelete("printer")]
+        public async Task<IActionResult> DeletePrinter(string hostname)
+        {
+            if (string.IsNullOrWhiteSpace(hostname))
+            {
+                return BadRequest();
+            }
+
+            try
+            {
+                using (await _printerList.LockAsync())
+                {
+                    _printerList.Remove(hostname);
+                }
+                return NoContent();
+            }
+            catch (Exception e)
+            {
+                if (e is AggregateException ae)
+                {
+                    e = ae.InnerException;
+                }
+                _logger.LogError(e, $"[{nameof(DeletePrinter)}] Failed delete printer {hostname}");
+                return StatusCode(500, e.Message);
+            }
+        }
+        #endregion
     }
 }
