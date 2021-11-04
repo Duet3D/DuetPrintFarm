@@ -165,7 +165,7 @@ namespace DuetPrintFarm.Services
                     if (!string.IsNullOrEmpty(_httpSession.Model.Job.File.FileName))
                     {
                         Printer.JobFile = Path.GetFileName(_httpSession.Model.Job.File.FileName);
-                        _logger.LogInformation("[{0}] Printer is printing {1}", Printer.Hostname, Printer.JobFile);
+                        _logger.LogInformation("[{0}] Printer is printing {1}", Printer.Name, Printer.JobFile);
                     }
                 }
 
@@ -249,7 +249,7 @@ namespace DuetPrintFarm.Services
                             {
                                 Printer.JobFile = jobFile;
                             }
-                            _logger.LogInformation("[{0}] Printer is printing {1}", Printer.Hostname, jobFile);
+                            _logger.LogInformation("[{0}] Printer is printing {1}", Printer.Name, jobFile);
                         }
                     }
                 };
@@ -550,16 +550,16 @@ namespace DuetPrintFarm.Services
             string reply = await _httpSession.SendCode(code, _disposedTCS.Token);
             if (reply.StartsWith("Error:"))
             {
-                _logger.LogError("[{0}] {1} => {2}", Printer.Hostname, code, reply.TrimEnd());
+                _logger.LogError("[{0}] {1} => {2}", Printer.Name, code, reply.TrimEnd());
                 throw new Exception(reply);
             }
             else if (reply.StartsWith("Warning:"))
             {
-                _logger.LogWarning("[{0}] {1} => {2}", Printer.Hostname, code, reply.TrimEnd());
+                _logger.LogWarning("[{0}] {1} => {2}", Printer.Name, code, reply.TrimEnd());
             }
             else if (!string.IsNullOrWhiteSpace(reply))
             {
-                _logger.LogInformation("[{0}] {1} => {2}", Printer.Hostname, code, reply.TrimEnd());
+                _logger.LogInformation("[{0}] {1} => {2}", Printer.Name, code, reply.TrimEnd());
             }
         }
 
