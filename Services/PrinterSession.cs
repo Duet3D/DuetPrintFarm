@@ -6,7 +6,6 @@ using Microsoft.Extensions.Logging;
 using Nito.AsyncEx;
 using System;
 using System.IO;
-using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 using Job = DuetPrintFarm.Model.Job;
@@ -299,7 +298,7 @@ namespace DuetPrintFarm.Services
             }
 
             bool wasPrinting = false;
-            Job job = null;
+            Job job = null, nextJob = null;
             do
             {
                 // Wait for the machine to be ready
@@ -309,7 +308,14 @@ namespace DuetPrintFarm.Services
                 // Try to get the next job
                 if (job == null)
                 {
-                    job = await _jobQueue.DequeueAsync(_disposedTCS.Token);
+                    using (await _jobQueue.LockAsync())
+                    {
+                        job = await _jobQueue.DequeueAsync(_disposedTCS.Token);
+                        lock (job)
+                        {
+                            job.Hostname = Printer.Hostname;
+                        }
+                    }
                 }
 
                 // Make sure the job file exists
@@ -339,7 +345,7 @@ namespace DuetPrintFarm.Services
                     _logger.LogDebug("[{0}] Attempted to get print job {1} even though the printer is suspended", Printer.Name, job.Filename);
                     using (await _jobQueue.LockAsync(_disposedTCS.Token))
                     {
-                        await _jobQueue.EnqueueAsync(job, _disposedTCS.Token);
+                        _jobQueue.Enqueue(job);
                     }
                     continue;
                 }
@@ -348,10 +354,6 @@ namespace DuetPrintFarm.Services
                 lock (this)
                 {
                     _job = job;
-                }
-                lock (job)
-                {
-                    job.Hostname = Printer.Hostname;
                 }
                 lock (Printer)
                 {
@@ -389,9 +391,28 @@ namespace DuetPrintFarm.Services
                     }
                     await WaitForIdle();
 
-                    // Is this the last file?
-                    Job nextJob = null;
-                    if (!_jobQueue.TryDequeue(out nextJob))
+                    // Try to get the next job
+                    nextJob = null;
+                    lock (Printer)
+                    {
+                        isSuspended = Printer.Suspended;
+                    }
+                    if (!isSuspended)
+                    {
+                        using (await _jobQueue.LockAsync(_disposedTCS.Token))
+                        {
+                            if (_jobQueue.TryDequeue(out nextJob))
+                            {
+                                lock (nextJob)
+                                {
+                                    nextJob.Hostname = Printer.Hostname;
+                                }
+                            }
+                        }
+                    }
+
+                    // Is this the last one?
+                    if (nextJob == null)
                     {
                         lock (job)
                         {
@@ -411,7 +432,17 @@ namespace DuetPrintFarm.Services
                         wasPrinting = false;
                     }
 
-                    // Print is complete
+                    // Remove the print job again from the remote machine
+                    try
+                    {
+                        await _httpSession.Delete($"0:/gcodes/{job.Filename}");
+                    }
+                    catch (Exception e)
+                    {
+                        _logger.LogWarning(e, "[{0}] Could not delete finished job {1}", Printer.Name, job.Filename);
+                    }
+
+                    // Print complete
                     _logger.LogInformation("[{0}] Finished{1} print job {2}", Printer.Name, wasPrinting ? string.Empty : " last", job.Filename);
                     lock (this)
                     {
@@ -421,7 +452,10 @@ namespace DuetPrintFarm.Services
                     {
                         _jobQueue.PrintFinished(job);
                     }
+
+                    // Move on to the next file (if applicable)
                     job = nextJob;
+                    nextJob = null;
                 }
                 catch (Exception e) when (e is not OperationCanceledException)
                 {
@@ -442,8 +476,9 @@ namespace DuetPrintFarm.Services
                     }
                     using (await _jobQueue.LockAsync(_disposedTCS.Token))
                     {
-                        await _jobQueue.EnqueueAsync(job, _disposedTCS.Token);
+                        _jobQueue.Enqueue(nextJob ?? job);
                     }
+                    nextJob = null;
 
                     // Wait a moment
                     await Task.Delay(2000, _disposedTCS.Token);
@@ -467,12 +502,9 @@ namespace DuetPrintFarm.Services
             {
                 await _machineIdle.WaitAsync(_machineDisconnectedCTS.Token);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (!disposed)
             {
-                if (_machineDisconnectedCTS.IsCancellationRequested)
-                {
-                    throw new IOException("Printer has gone offline");
-                }
+                throw new IOException("Printer has gone offline");
             }
         }
 
@@ -528,6 +560,88 @@ namespace DuetPrintFarm.Services
             else if (!string.IsNullOrWhiteSpace(reply))
             {
                 _logger.LogInformation("[{0}] {1} => {2}", Printer.Hostname, code, reply.TrimEnd());
+            }
+        }
+
+        /// <summary>
+        /// Pause the machine
+        /// </summary>
+        /// <returns>True on success</returns>
+        public async Task<bool> PauseAsync()
+        {
+            lock (_httpSession.Model)
+            {
+                if (_httpSession.Model.State.Status == MachineStatus.Pausing ||
+                    _httpSession.Model.State.Status == MachineStatus.Paused)
+                {
+                    // Already paused
+                    return true;
+                }
+            }
+
+            try
+            {
+                await SendCode("M25");
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Resume the machine
+        /// </summary>
+        /// <returns>True on success</returns>
+        public async Task<bool> ResumeAsync()
+        {
+            lock (_httpSession.Model)
+            {
+                if (_httpSession.Model.State.Status == MachineStatus.Resuming ||
+                    _httpSession.Model.State.Status == MachineStatus.Processing)
+                {
+                    // Already resumed
+                    return true;
+                }
+            }
+
+            try
+            {
+                await SendCode("M24");
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+
+        /// <summary>
+        /// Cancel the current print job
+        /// </summary>
+        /// <returns>True on success</returns>
+        public async Task<bool> CancelAsync()
+        {
+            lock (_httpSession.Model)
+            {
+                if (_httpSession.Model.State.Status == MachineStatus.Cancelling ||
+                    _httpSession.Model.State.Status == MachineStatus.Idle)
+                {
+                    // Already cancelled
+                    return true;
+                }
+            }
+
+            try
+            {
+                await SendCode("M0");
+                return true;
+            }
+            catch
+            {
+                return false;
             }
         }
     }

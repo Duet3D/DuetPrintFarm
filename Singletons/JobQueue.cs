@@ -7,7 +7,6 @@ using System.IO;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
-using System.Threading.Channels;
 using System.Threading.Tasks;
 
 namespace DuetPrintFarm.Singletons
@@ -50,9 +49,8 @@ namespace DuetPrintFarm.Singletons
         /// Enqueue a new or existing job
         /// </summary>
         /// <param name="job">Job to enqueue</param>
-        /// <param name="cancellationToken">Optional cancellation token</param>
         /// <returns>Asynchronous task</returns>
-        public Task EnqueueAsync(Job job, CancellationToken cancellationToken = default);
+        public void Enqueue(Job job);
 
         /// <summary>
         /// Try to dequeue a pending job returning true on success
@@ -64,89 +62,42 @@ namespace DuetPrintFarm.Singletons
         /// <summary>
         /// Dequeue a pending job
         /// </summary>
-        /// <param name="cancellationToken"></param>
-        /// <returns>Next pending job</returns>
-        public ValueTask<Job> DequeueAsync(CancellationToken cancellationToken);
-
-        /// <summary>
-        /// Pause a job being processed
-        /// </summary>
-        /// <param name="job">Job to pause</param>
         /// <param name="cancellationToken">Optional cancellation token</param>
-        /// <returns>Asynchronous task</returns>
-        public Task PauseAsync(string filename, CancellationToken cancellationToken = default);
+        /// <returns>Next pending job</returns>
+        public ValueTask<Job> DequeueAsync(CancellationToken cancellationToken = default);
 
         /// <summary>
         /// Pause a job being processed
         /// </summary>
         /// <param name="index">Index of the job to pause</param>
-        /// <param name="cancellationToken">Optional cancellation token</param>
-        /// <returns>Asynchronous task</returns>
-        public Task PauseAsync(int index, CancellationToken cancellationToken = default);
-
-        /// <summary>
-        /// Resume a paused job
-        /// </summary>
-        /// <param name="job">Job to resume</param>
-        /// <param name="cancellationToken">Optional cancellation token</param>
-        /// <returns>Asynchronous task</returns>
-        public Task ResumeAsync(string filename, CancellationToken cancellationToken = default);
+        /// <returns>Whether the job could be paused</returns>
+        public bool Pause(int index);
 
         /// <summary>
         /// Resume a paused job
         /// </summary>
         /// <param name="index">Index of the job to resume</param>
-        /// <param name="cancellationToken">Optional cancellation token</param>
-        /// <returns>Asynchronous task</returns>
-        public Task ResumeAsync(int index, CancellationToken cancellationToken = default);
-
-        /// <summary>
-        /// Cancel a paused job
-        /// </summary>
-        /// <param name="job">Job to cancel</param>
-        /// <param name="cancellationToken">Optional cancellation token</param>
-        /// <returns>Asynchronous task</returns>
-        public Task CancelAsync(string filename, CancellationToken cancellationToken = default);
+        /// <returns>Whether the job could be resumed</returns>
+        public bool Resume(int index);
 
         /// <summary>
         /// Cancel a paused job
         /// </summary>
         /// <param name="index">Index of the job to cancel</param>
-        /// <param name="cancellationToken">Optional cancellation token</param>
-        /// <returns>Asynchronous task</returns>
-        public Task CancelAsync(int index, CancellationToken cancellationToken = default);
-
-        /// <summary>
-        /// Repeat a processed job
-        /// </summary>
-        /// <param name="job">Job to remove</param>
-        /// <param name="cancellationToken">Optional cancellation token</param>
-        /// <returns>Asynchronous task</returns>
-        public Task RepeatAsync(string filename, CancellationToken cancellationToken = default);
+        /// <returns>Whether the job could be cancelled</returns>
+        public bool Cancel(int index);
 
         /// <summary>
         /// Repeat a processed job
         /// </summary>
         /// <param name="index">Index of the job to remove</param>
-        /// <param name="cancellationToken">Optional cancellation token</param>
-        /// <returns>Asynchronous task</returns>
-        public Task RepeatAsync(int index, CancellationToken cancellationToken = default);
-
-        /// <summary>
-        /// Remove an existing job
-        /// </summary>
-        /// <param name="job">Job to remove</param>
-        /// <param name="cancellationToken">Optional cancellation token</param>
-        /// <returns>Asynchronous task</returns>
-        public Task RemoveAsync(string filename, CancellationToken cancellationToken = default);
+        public bool Repeat(int index);
 
         /// <summary>
         /// Remove an existing job
         /// </summary>
         /// <param name="index">Index of the job to remove</param>
-        /// <param name="cancellationToken">Optional cancellation token</param>
-        /// <returns>Asynchronous task</returns>
-        public Task RemoveAsync(int index, CancellationToken cancellationToken = default);
+        public bool Remove(int index);
 
         /// <summary>
         /// Remove printed jobs
@@ -158,6 +109,27 @@ namespace DuetPrintFarm.Singletons
         /// </summary>
         /// <param name="job">Finished job</param>
         public void PrintFinished(Job job);
+
+        /// <summary>
+        /// Delegate for job events
+        /// </summary>
+        /// <param name="job">Affected job</param>
+        public delegate void JobEvent(Job job);
+
+        /// <summary>
+        /// Called when a job is to be paused
+        /// </summary>
+        public event JobEvent OnPauseJob;
+
+        /// <summary>
+        /// Called when a job is to be resumed
+        /// </summary>
+        public event JobEvent OnResumeJob;
+
+        /// <summary>
+        /// Called when a job is to be cancelled
+        /// </summary>
+        public event JobEvent OnCancelJob;
     }
 
     /// <summary>
@@ -180,26 +152,21 @@ namespace DuetPrintFarm.Singletons
         }
 
         /// <summary>
-        /// Lock for concurrent access to the print queue
+        /// Monitor for concurrent access to the print queue and for notifying waiting clients about new print jobs
         /// </summary>
-        private readonly AsyncLock _lock = new();
+        private readonly AsyncMonitor _monitor = new();
 
         /// <summary>
         /// Lock access to the job queue
         /// </summary>
         /// <param name="cancellationToken">Cancellation token</param>
         /// <returns>Disposable lock</returns>
-        public AwaitableDisposable<IDisposable> LockAsync(CancellationToken cancellationToken = default) => _lock.LockAsync(cancellationToken);
+        public AwaitableDisposable<IDisposable> LockAsync(CancellationToken cancellationToken = default) => _monitor.EnterAsync(cancellationToken);
 
         /// <summary>
         /// List of all queued and running jobs
         /// </summary>
-        public List<Job> _jobList = new();
-
-        /// <summary>
-        /// List of pending jobs. There is only a single writer because this instance is locked whenever it is written to
-        /// </summary>
-        private readonly Channel<Job> _pendingJobs = Channel.CreateUnbounded<Job>(new UnboundedChannelOptions() { SingleWriter = true });
+        private List<Job> _jobList = new();
 
         /// <summary>
         /// Get all jobs as JSON
@@ -259,18 +226,20 @@ namespace DuetPrintFarm.Singletons
                 if (job.TimeCompleted == null)
                 {
                     job.Reset();
+                    if (job.IsReadyToPrint)
+                    {
+                        _monitor.Pulse();
+                    }
                 }
             }
-            await RebuildPendingJobsAsync(cancellationToken);
         }
 
         /// <summary>
         /// Enqueue a new or existing job
         /// </summary>
         /// <param name="job">Job to enqueue</param>
-        /// <param name="cancellationToken">Optional cancellation token</param>
         /// <returns>Asynchronous task</returns>
-        public async Task EnqueueAsync(Job job, CancellationToken cancellationToken = default)
+        public void Enqueue(Job job)
         {
             lock (job)
             {
@@ -283,15 +252,20 @@ namespace DuetPrintFarm.Singletons
                 {
                     _jobList.Remove(job);
 
+                    bool jobInserted = false;
                     for (int i = 0; i < _jobList.Count; i++)
                     {
                         if (_jobList[i].Hostname == null)
                         {
                             _jobList.Insert(i, job);
-                            return;
+                            jobInserted = true;
+                            break;
                         }
                     }
-                    _jobList.Insert(0, job);
+                    if (!jobInserted)
+                    {
+                        _jobList.Insert(0, job);
+                    }
                 }
                 _logger.LogInformation("Existing job {0} enqueued", Path.GetFileName(job.AbsoluteFilename));
             }
@@ -313,31 +287,8 @@ namespace DuetPrintFarm.Singletons
                 }
                 _logger.LogInformation("New job {0} enqueued", Path.GetFileName(job.AbsoluteFilename));
             }
-            await RebuildPendingJobsAsync(cancellationToken);
-        }
 
-        /// <summary>
-        /// Rebuild the pending job queue
-        /// </summary>
-        /// <param name="cancellationToken">Optional cancellation token</param>
-        /// <returns>Asynchronous task</returns>
-        private async Task RebuildPendingJobsAsync(CancellationToken cancellationToken = default)
-        {
-            while (_pendingJobs.Reader.TryRead(out _)) { }
-
-            foreach (Job job in _jobList)
-            {
-                bool readyToPrint;
-                lock (job)
-                {
-                    readyToPrint = job.Hostname == null && !job.Paused && job.TimeCompleted == null;
-                }
-
-                if (readyToPrint)
-                {
-                    await _pendingJobs.Writer.WriteAsync(job, cancellationToken);
-                }
-            }
+            _monitor.Pulse();
         }
 
         /// <summary>
@@ -345,222 +296,157 @@ namespace DuetPrintFarm.Singletons
         /// </summary>
         /// <param name="job">Dequeued job</param>
         /// <returns>Whether a job could be dequeued</returns>
-        public bool TryDequeue(out Job job) => _pendingJobs.Reader.TryRead(out job);
+        public bool TryDequeue(out Job job)
+        {
+            foreach (Job item in _jobList)
+            {
+                if (item.IsReadyToPrint)
+                {
+                    job = item;
+                    return true;
+                }
+            }
+            job = null;
+            return false;
+        }
 
         /// <summary>
         /// Dequeue a pending job
         /// </summary>
-        /// <param name="cancellationToken"></param>
+        /// <param name="cancellationToken">Optional cancellation token</param>
         /// <returns>Next pending job</returns>
-        public ValueTask<Job> DequeueAsync(CancellationToken cancellationToken) => _pendingJobs.Reader.ReadAsync(cancellationToken);
+        public async ValueTask<Job> DequeueAsync(CancellationToken cancellationToken = default)
+        {
+            Job job;
+            while (!TryDequeue(out job))
+            {
+                await _monitor.WaitAsync(cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+            return job;
+        }
 
         /// <summary>
-        /// Pause a job being processed
+        /// Called when a job is to be paused
         /// </summary>
-        /// <param name="job">Job to pause</param>
-        /// <param name="cancellationToken">Optional cancellation token</param>
-        /// <returns>Asynchronous task</returns>
-        public async Task PauseAsync(string filename, CancellationToken cancellationToken = default)
-        {
-            foreach (Job job in _jobList)
-            {
-                if (job.Filename == filename && job.Progress != null && job.TimeCompleted == null)
-                {
-#warning Implement this
-
-                    _logger.LogInformation("Paused job {0}", filename);
-                    return;
-                }
-            }
-            _logger.LogWarning("Failed to pause job {0}", filename);
-        }
+        public event IJobQueue.JobEvent OnPauseJob;
 
         /// <summary>
         /// Pause a job being processed
         /// </summary>
         /// <param name="index">Index of the job to pause</param>
-        /// <param name="cancellationToken">Optional cancellation token</param>
-        /// <returns>Asynchronous task</returns>
-        public async Task PauseAsync(int index, CancellationToken cancellationToken = default)
+        /// <returns>Whether the job could be paused</returns>
+        public bool Pause(int index)
         {
-            if (index >= 0 && index < _jobList.Count && _jobList[index].TimeCompleted == null && _jobList[index].Progress != null)
+            if (index >= 0 && index < _jobList.Count)
             {
-#warning Implement this
-
-                _jobList[index].Paused = true;
-                _logger.LogInformation("Paused job #{0}", index);
-                return;
+                lock (_jobList[index])
+                {
+                    if (_jobList[index].TimeCompleted == null && _jobList[index].Progress != null)
+                    {
+                        OnPauseJob?.Invoke(_jobList[index]);
+                        return true;
+                    }
+                }
             }
             _logger.LogWarning("Failed to pause job #{0}", index);
+            return false;
         }
 
         /// <summary>
-        /// Resume a paused job
+        /// Called when a job is to be resumed
         /// </summary>
-        /// <param name="job">Job to resume</param>
-        /// <param name="cancellationToken">Optional cancellation token</param>
-        /// <returns>Asynchronous task</returns>
-        public async Task ResumeAsync(string filename, CancellationToken cancellationToken = default)
-        {
-            foreach (Job job in _jobList)
-            {
-                if (job.Filename == filename && job.Progress != null && job.Paused)
-                {
-#warning Implement this
-
-                    _logger.LogInformation("Resumed job {0}", filename);
-                    return;
-                }
-            }
-            _logger.LogWarning("Failed to resume job {0}", filename);
-        }
+        public event IJobQueue.JobEvent OnResumeJob;
 
         /// <summary>
         /// Resume a paused job
         /// </summary>
         /// <param name="index">Index of the job to resume</param>
-        /// <param name="cancellationToken">Optional cancellation token</param>
-        /// <returns>Asynchronous task</returns>
-        public async Task ResumeAsync(int index, CancellationToken cancellationToken = default)
+        /// <returns>Whether the job could be resumed</returns>
+        public bool Resume(int index)
         {
-            if (index >= 0 && index < _jobList.Count && _jobList[index].Paused)
+            if (index >= 0 && index < _jobList.Count)
             {
-#warning Implement this
-
-                _jobList[index].Paused = false;
-                _logger.LogInformation("Resumed job #{0}", index);
-                return;
-            }
-            _logger.LogWarning("Failed to resume job #{0}", index);
-        }
-
-
-        /// <summary>
-        /// Cancel a paused job
-        /// </summary>
-        /// <param name="job">Job to cancel</param>
-        /// <param name="cancellationToken">Optional cancellation token</param>
-        /// <returns>Asynchronous task</returns>
-        public async Task CancelAsync(string filename, CancellationToken cancellationToken = default)
-        {
-            foreach (Job job in _jobList)
-            {
-                if (job.Filename == filename && job.Progress != null && job.Paused)
+                lock (_jobList[index])
                 {
-#warning Implement this
-
-                    _logger.LogInformation("Cancelled job {0}", filename);
-                    return;
+                    if (_jobList[index].Paused)
+                    {
+                        OnResumeJob?.Invoke(_jobList[index]);
+                        return true;
+                    }
                 }
             }
-            _logger.LogWarning("Failed to cancel job {0}", filename);
+            _logger.LogWarning("Failed to resume job #{0}", index);
+            return false;
         }
+
+        /// <summary>
+        /// Called when a job is to be cancelled
+        /// </summary>
+        public event IJobQueue.JobEvent OnCancelJob;
 
         /// <summary>
         /// Cancel a paused job
         /// </summary>
         /// <param name="index">Index of the job to cancel</param>
-        /// <param name="cancellationToken">Optional cancellation token</param>
-        /// <returns>Asynchronous task</returns>
-        public async Task CancelAsync(int index, CancellationToken cancellationToken = default)
+        /// <returns>Whether the job could be cancelled</returns>
+        public bool Cancel(int index)
         {
-            if (index >= 0 && index < _jobList.Count && _jobList[index].Paused)
+            if (index >= 0 && index < _jobList.Count)
             {
-#warning Implement this
-
-                _jobList[index].Paused = false;
-                _jobList[index].Cancelled = true;
-                _logger.LogInformation("Cancelled job #{0}", index);
-                return;
-            }
-            _logger.LogWarning("Failed to cancel job #{0}", index);
-        }
-
-        /// <summary>
-        /// Repeat a processed job
-        /// </summary>
-        /// <param name="job">Job to repeat</param>
-        /// <param name="cancellationToken">Optional cancellation token</param>
-        /// <returns>Asynchronous task</returns>
-        public async Task RepeatAsync(string filename, CancellationToken cancellationToken = default)
-        {
-            foreach (Job job in _jobList)
-            {
-                if (job.Filename == filename && job.TimeCompleted != null)
+                lock (_jobList[index])
                 {
-                    await EnqueueAsync(job, cancellationToken);
-
-                    _logger.LogInformation("Repeating job {0}", filename);
-                    return;
+                    if (_jobList[index].Paused)
+                    {
+                        OnCancelJob?.Invoke(_jobList[index]);
+                        return true;
+                    }
                 }
             }
-            _logger.LogWarning("Failed to repeat job {0}", filename);
+            _logger.LogWarning("Failed to cancel job #{0}", index);
+            return false;
         }
 
         /// <summary>
         /// Repeat a processed job
         /// </summary>
         /// <param name="index">Index of the job to repeat</param>
-        /// <param name="cancellationToken">Optional cancellation token</param>
-        /// <returns>Asynchronous task</returns>
-        public async Task RepeatAsync(int index, CancellationToken cancellationToken = default)
+        /// <returns>Whether the job could be repeated</returns>
+        public bool Repeat(int index)
         {
             if (index >= 0 && index < _jobList.Count && _jobList[index].TimeCompleted != null)
             {
                 Job job = _jobList[index];
                 if (job.TimeCompleted != null)
                 {
-                    await EnqueueAsync(job, cancellationToken);
+                    Enqueue(job);
 
                     _logger.LogInformation("Repeating job #{0}", index);
-                    return;
+                    return true;
                 }
             }
             _logger.LogWarning("Failed to repeat job #{0}", index);
-        }
-
-        /// <summary>
-        /// Remove an existing job
-        /// </summary>
-        /// <param name="job">Job to remove</param>
-        /// <param name="cancellationToken">Optional cancellation token</param>
-        /// <returns>Asynchronous task</returns>
-        public async Task RemoveAsync(string filename, CancellationToken cancellationToken = default)
-        {
-            foreach (Job job in _jobList)
-            {
-                if (job.Filename == filename)
-                {
-                    _jobList.Remove(job);
-                    TryRemoveJobFile(job.AbsoluteFilename);
-                    await RebuildPendingJobsAsync(cancellationToken);
-
-                    _logger.LogInformation("Removed job {0}", filename);
-                    return;
-                }
-            }
-            _logger.LogWarning("Failed to remove job {0}", filename);
+            return false;
         }
 
         /// <summary>
         /// Remove an existing job
         /// </summary>
         /// <param name="index">Index of the job to remove</param>
-        /// <param name="cancellationToken">Optional cancellation token</param>
-        /// <returns>Asynchronous task</returns>
-        public async Task RemoveAsync(int index, CancellationToken cancellationToken = default)
+        /// <returns>Whether the job could be removed</returns>
+        public bool Remove(int index)
         {
             if (index >= 0 && index < _jobList.Count)
             {
                 string jobFile = _jobList[index].AbsoluteFilename;
                 _jobList.RemoveAt(index);
                 TryRemoveJobFile(jobFile);
-                await RebuildPendingJobsAsync(cancellationToken);
 
                 _logger.LogInformation("Removed job #{0}", index);
-                return;
+                return true;
             }
             _logger.LogWarning("Failed to remove job #{0}", index);
+            return false;
         }
 
         /// <summary>

@@ -1,5 +1,6 @@
 ﻿using System;
 using System.IO;
+using System.Text.Json.Serialization;
 
 namespace DuetPrintFarm.Model
 {
@@ -67,6 +68,12 @@ namespace DuetPrintFarm.Model
         /// Indicates when the print job completed
         /// </summary>
         public DateTime? TimeCompleted { get; set; }
+
+        /// <summary>
+        /// Indicates if the job is ready to be printed
+        /// </summary>
+        [JsonIgnore]
+        public bool IsReadyToPrint { get => string.IsNullOrEmpty(Hostname) && !Paused && TimeCompleted == null; }
 
         /// <summary>
         /// Reset this instance so it can be printed again

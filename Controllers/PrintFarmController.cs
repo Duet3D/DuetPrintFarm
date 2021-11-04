@@ -3,7 +3,6 @@ using System.IO;
 using System.Threading.Tasks;
 using System.Web;
 using DuetPrintFarm.Model;
-using DuetPrintFarm.Services;
 using DuetPrintFarm.Singletons;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Configuration;
@@ -108,7 +107,7 @@ namespace DuetPrintFarm.Controllers
                 // Enqueue it
                 using (await _jobQueue.LockAsync())
                 {
-                    await _jobQueue.EnqueueAsync(new Job() { AbsoluteFilename = resolvedPath });
+                    _jobQueue.Enqueue(new Job() { AbsoluteFilename = resolvedPath });
                 }
 
                 return Created(HttpUtility.UrlPathEncode(filename), null);
@@ -125,13 +124,10 @@ namespace DuetPrintFarm.Controllers
         }
 
         /// <summary>
-        /// POST /printFarm/pause?filename={filename}
-        /// - or -
         /// POST /printFarm/pause?index={index}
         /// Pause a job file from the queue
         /// </summary>
-        /// <param name="filename">Filename to pause</param>
-        /// <param name="filename">Job index to pause</param>
+        /// <param name="index">Job index to pause</param>
         /// <returns>
         /// HTTP status code:
         /// (204) No Content
@@ -139,30 +135,18 @@ namespace DuetPrintFarm.Controllers
         /// (500) Generic error occurred
         /// </returns>
         [HttpPost("pause")]
-        public async Task<IActionResult> PauseFile(string filename, int? index)
+        public async Task<IActionResult> PauseFile(int index)
         {
-            if (string.IsNullOrWhiteSpace(filename) && index == null)
-            {
-                return BadRequest();
-            }
-
-            string resolvedPath = "n/a";
             try
             {
                 using (await _jobQueue.LockAsync())
                 {
-                    if (filename != null)
+                    if (_jobQueue.Pause(index))
                     {
-                        resolvedPath = Path.Combine(GCodesDirectory, filename);
-                        await _jobQueue.PauseAsync(filename);
+                        return NoContent();
                     }
-                    else
-                    {
-                        resolvedPath = $"Job #{index}";
-                        await _jobQueue.PauseAsync(index.Value);
-                    }
+                    return BadRequest();
                 }
-                return NoContent();
             }
             catch (Exception e)
             {
@@ -170,19 +154,16 @@ namespace DuetPrintFarm.Controllers
                 {
                     e = ae.InnerException;
                 }
-                _logger.LogWarning(e, $"[{nameof(PauseFile)}] Failed pause file {filename ?? index.ToString()} (resolved to {resolvedPath})");
+                _logger.LogWarning(e, $"[{nameof(RepeatFile)}] Failed repeat file #{index}");
                 return StatusCode(500, e.Message);
             }
         }
 
         /// <summary>
-        /// POST /printFarm/resume?filename={filename}
-        /// - or -
         /// POST /printFarm/resume?index={index}
         /// Resume a job file from the queue
         /// </summary>
-        /// <param name="filename">Filename to resume</param>
-        /// <param name="filename">Job index to resume</param>
+        /// <param name="index">Job index to resume</param>
         /// <returns>
         /// HTTP status code:
         /// (204) No Content
@@ -190,30 +171,18 @@ namespace DuetPrintFarm.Controllers
         /// (500) Generic error occurred
         /// </returns>
         [HttpPost("resume")]
-        public async Task<IActionResult> ResumeFile(string filename, int? index)
+        public async Task<IActionResult> ResumeFile(int index)
         {
-            if (string.IsNullOrWhiteSpace(filename) && index == null)
-            {
-                return BadRequest();
-            }
-
-            string resolvedPath = "n/a";
             try
             {
                 using (await _jobQueue.LockAsync())
                 {
-                    if (filename != null)
+                    if (_jobQueue.Resume(index))
                     {
-                        resolvedPath = Path.Combine(GCodesDirectory, filename);
-                        await _jobQueue.ResumeAsync(filename);
+                        return NoContent();
                     }
-                    else
-                    {
-                        resolvedPath = $"Job #{index}";
-                        await _jobQueue.ResumeAsync(index.Value);
-                    }
+                    return BadRequest();
                 }
-                return NoContent();
             }
             catch (Exception e)
             {
@@ -221,14 +190,12 @@ namespace DuetPrintFarm.Controllers
                 {
                     e = ae.InnerException;
                 }
-                _logger.LogWarning(e, $"[{nameof(ResumeFile)}] Failed resume file {filename ?? index.ToString()} (resolved to {resolvedPath})");
+                _logger.LogWarning(e, $"[{nameof(ResumeFile)}] Failed resume file #{index}");
                 return StatusCode(500, e.Message);
             }
         }
 
         /// <summary>
-        /// POST /printFarm/cancel?filename={filename}
-        /// - or -
         /// POST /printFarm/cancel?index={index}
         /// Cancel a job file from the queue
         /// </summary>
@@ -241,30 +208,18 @@ namespace DuetPrintFarm.Controllers
         /// (500) Generic error occurred
         /// </returns>
         [HttpPost("cancel")]
-        public async Task<IActionResult> CancelFile(string filename, int? index)
+        public async Task<IActionResult> CancelFile(int index)
         {
-            if (string.IsNullOrWhiteSpace(filename) && index == null)
-            {
-                return BadRequest();
-            }
-
-            string resolvedPath = "n/a";
             try
             {
                 using (await _jobQueue.LockAsync())
                 {
-                    if (filename != null)
+                    if (_jobQueue.Cancel(index))
                     {
-                        resolvedPath = Path.Combine(GCodesDirectory, filename);
-                        await _jobQueue.CancelAsync(filename);
+                        return NoContent();
                     }
-                    else
-                    {
-                        resolvedPath = $"Job #{index}";
-                        await _jobQueue.CancelAsync(index.Value);
-                    }
+                    return BadRequest();
                 }
-                return NoContent();
             }
             catch (Exception e)
             {
@@ -272,19 +227,16 @@ namespace DuetPrintFarm.Controllers
                 {
                     e = ae.InnerException;
                 }
-                _logger.LogWarning(e, $"[{nameof(CancelFile)}] Failed cancel file {filename ?? index.ToString()} (resolved to {resolvedPath})");
+                _logger.LogWarning(e, $"[{nameof(CancelFile)}] Failed resume file #{index}");
                 return StatusCode(500, e.Message);
             }
         }
 
         /// <summary>
-        /// POST /printFarm/repeat?filename={filename}
-        /// - or -
         /// POST /printFarm/repeat?index={index}
         /// Repeat a job file from the queue
         /// </summary>
-        /// <param name="filename">Filename to repeat</param>
-        /// <param name="filename">Job index to repeat</param>
+        /// <param name="index">Job index to repeat</param>
         /// <returns>
         /// HTTP status code:
         /// (204) No Content
@@ -292,29 +244,18 @@ namespace DuetPrintFarm.Controllers
         /// (500) Generic error occurred
         /// </returns>
         [HttpPost("repeat")]
-        public async Task<IActionResult> RepeatFile(string filename, int? index)
+        public async Task<IActionResult> RepeatFile(int index)
         {
-            if (string.IsNullOrWhiteSpace(filename) && index == null)
-            {
-                return BadRequest();
-            }
-
-            string resolvedPath = "n/a";
             try
             {
                 using (await _jobQueue.LockAsync())
                 {
-                    if (filename != null)
+                    if (_jobQueue.Repeat(index))
                     {
-                        await _jobQueue.RepeatAsync(filename);
+                        return NoContent();
                     }
-                    else
-                    {
-                        resolvedPath = $"Job #{index}";
-                        await _jobQueue.RepeatAsync(index.Value);
-                    }
+                    return BadRequest();
                 }
-                return NoContent();
             }
             catch (Exception e)
             {
@@ -322,14 +263,12 @@ namespace DuetPrintFarm.Controllers
                 {
                     e = ae.InnerException;
                 }
-                _logger.LogWarning(e, $"[{nameof(RepeatFile)}] Failed repeat file {filename ?? index.ToString()} (resolved to {resolvedPath})");
+                _logger.LogWarning(e, $"[{nameof(RepeatFile)}] Failed repeat file #{index}");
                 return StatusCode(500, e.Message);
             }
         }
 
         /// <summary>
-        /// DELETE /printFarm/job?filename={filename}
-        /// - or -
         /// DELETE /printFarm/job?index={index}
         /// Remove a job file from the queue
         /// </summary>
@@ -342,30 +281,18 @@ namespace DuetPrintFarm.Controllers
         /// (500) Generic error occurred
         /// </returns>
         [HttpDelete("job")]
-        public async Task<IActionResult> RemoveFile(string filename, int? index)
+        public async Task<IActionResult> RemoveFile(int index)
         {
-            if (string.IsNullOrWhiteSpace(filename) && index == null)
-            {
-                return BadRequest();
-            }
-
-            string resolvedPath = "n/a";
             try
             {
                 using (await _jobQueue.LockAsync())
                 {
-                    if (filename != null)
+                    if ( _jobQueue.Remove(index))
                     {
-                        resolvedPath = Path.Combine(GCodesDirectory, filename);
-                        await _jobQueue.RemoveAsync(filename);
+                        return NoContent();
                     }
-                    else
-                    {
-                        resolvedPath = $"Job #{index}";
-                        await _jobQueue.RemoveAsync(index.Value);
-                    }
+                    return BadRequest();
                 }
-                return NoContent();
             }
             catch (Exception e)
             {
@@ -373,7 +300,7 @@ namespace DuetPrintFarm.Controllers
                 {
                     e = ae.InnerException;
                 }
-                _logger.LogWarning(e, $"[{nameof(RemoveFile)}] Failed remove file {filename ?? index.ToString()} (resolved to {resolvedPath})");
+                _logger.LogWarning(e, $"[{nameof(RepeatFile)}] Failed remove file #{index}");
                 return StatusCode(500, e.Message);
             }
         }

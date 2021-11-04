@@ -3,7 +3,6 @@ using System.IO;
 using System.Threading.Tasks;
 using System.Web;
 using DuetPrintFarm.Model;
-using DuetPrintFarm.Services;
 using DuetPrintFarm.Singletons;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Configuration;
@@ -152,7 +151,7 @@ namespace DuetPrintFarm.Controllers
                 // Enqueue it
                 using (await _jobQueue.LockAsync())
                 {
-                    await _jobQueue.EnqueueAsync(new Job() { AbsoluteFilename = resolvedPath });
+                    _jobQueue.Enqueue(new Job() { AbsoluteFilename = resolvedPath });
                 }
 
                 return Created(HttpUtility.UrlPathEncode(filename), null);

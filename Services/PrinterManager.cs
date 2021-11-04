@@ -33,6 +33,11 @@ namespace DuetPrintFarm.Services
         private readonly IServiceProvider _provider;
 
         /// <summary>
+        /// Job queue instance
+        /// </summary>
+        private readonly IJobQueue _jobQueue;
+
+        /// <summary>
         /// List of printers
         /// </summary>
         private readonly IPrinterList _printerList;
@@ -53,11 +58,12 @@ namespace DuetPrintFarm.Services
         /// <param name="configuration">App configuration</param>
         /// <param name="logger">Logger instance</param>
         /// <param name="printerList">List of configured printers</param>
-        public PrinterManager(IConfiguration configuration, ILogger<PrinterManager> logger, IServiceProvider provider, IPrinterList printerList)
+        public PrinterManager(IConfiguration configuration, ILogger<PrinterManager> logger, IServiceProvider provider, IJobQueue jobQueue, IPrinterList printerList)
         {
             _configuration = configuration;
             _logger = logger;
             _provider = provider;
+            _jobQueue = jobQueue;
             _printerList = printerList;
         }
 
@@ -68,6 +74,9 @@ namespace DuetPrintFarm.Services
         /// <returns>Asynchronous task</returns>
         public async Task StartAsync(CancellationToken cancellationToken)
         {
+            _jobQueue.OnPauseJob += PauseJob;
+            _jobQueue.OnResumeJob += ResumeJob;
+            _jobQueue.OnCancelJob += CancelJob;
             _printerList.OnPrinterAdded += PrinterAdded;
             _printerList.OnPrinterSuspended += PrinterSuspended;
             _printerList.OnPrinterResumed += PrinterResumed;
@@ -81,6 +90,73 @@ namespace DuetPrintFarm.Services
                     await _printerList.LoadFromFileAsync(PrintersFile, cancellationToken);
                 }
                 _logger.LogInformation("Printers loaded from {0}", PrintersFile);
+            }
+        }
+
+        /// <summary>
+        /// Pause a job item
+        /// </summary>
+        /// <param name="job">Job to pause</param>
+        private async void PauseJob(Job job)
+        {
+            foreach (PrinterSession session in _printerSessions)
+            {
+                if (session.Printer.Hostname == job.Hostname)
+                {
+                    if (await session.PauseAsync())
+                    {
+                        lock (job)
+                        {
+                            job.Paused = true;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Resume a job item
+        /// </summary>
+        /// <param name="job">Job to resume</param>
+        private async void ResumeJob(Job job)
+        {
+            foreach (PrinterSession session in _printerSessions)
+            {
+                if (session.Printer.Hostname == job.Hostname)
+                {
+                    if (await session.ResumeAsync())
+                    {
+                        lock (job)
+                        {
+                            job.Paused = false;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Cancel a job item
+        /// </summary>
+        /// <param name="job">Job to cancel</param>
+        private async void CancelJob(Job job)
+        {
+            foreach (PrinterSession session in _printerSessions)
+            {
+                if (session.Printer.Hostname == job.Hostname)
+                {
+                    if (await session.CancelAsync())
+                    {
+                        lock (job)
+                        {
+                            job.Cancelled = true;
+                            job.Paused = false;
+                        }
+                    }
+                    break;
+                }
             }
         }
 
@@ -149,6 +225,9 @@ namespace DuetPrintFarm.Services
         /// <returns>Asynchronous task</returns>
         public async Task StopAsync(CancellationToken cancellationToken)
         {
+            _jobQueue.OnPauseJob -= PauseJob;
+            _jobQueue.OnResumeJob -= ResumeJob;
+            _jobQueue.OnCancelJob -= CancelJob;
             _printerList.OnPrinterAdded -= PrinterAdded;
             _printerList.OnPrinterSuspended -= PrinterSuspended;
             _printerList.OnPrinterResumed -= PrinterResumed;
