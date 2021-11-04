@@ -214,6 +214,7 @@ namespace DuetPrintFarm.Services
                 {
                     _printerSessions.Remove(session);
                     await session.DisposeAsync();
+                    break;
                 }
             }
         }
