@@ -255,7 +255,7 @@ namespace DuetPrintFarm.Singletons
                     bool jobInserted = false;
                     for (int i = 0; i < _jobList.Count; i++)
                     {
-                        if (_jobList[i].Hostname == null)
+                        if (_jobList[i].Hostname == null || _jobList[i].TimeCompleted != null)
                         {
                             _jobList.Insert(i, job);
                             jobInserted = true;
