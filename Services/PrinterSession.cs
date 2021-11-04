@@ -142,6 +142,7 @@ namespace DuetPrintFarm.Services
             {
                 lock (Printer)
                 {
+                    Printer.Name = _httpSession.Model.Network.Name;
                     Printer.Status = _httpSession.Model.State.Status;
 
                     if (_httpSession.Model.State.Status == MachineStatus.Idle)
@@ -254,6 +255,19 @@ namespace DuetPrintFarm.Services
                     }
                 };
 
+                // Watch for name changes
+                _httpSession.Model.Network.PropertyChanged += (sender, e) =>
+                {
+                    if (e.PropertyName == nameof(ObjectModel.Network.Name))
+                    {
+                        _logger.LogInformation("[{0}] Printer has changed its name to {1}", Printer.Name, _httpSession.Model.Network.Name);
+                        lock (Printer)
+                        {
+                            Printer.Name = _httpSession.Model.Network.Name;
+                        }
+                    }
+                };
+
                 // Watch for state changes
                 _httpSession.Model.State.PropertyChanged += (sender, e) =>
                 {
@@ -330,6 +344,8 @@ namespace DuetPrintFarm.Services
                     {
                         _jobQueue.PrintFinished(job);
                     }
+
+                    job = null;
                     continue;
                 }
 
@@ -347,6 +363,8 @@ namespace DuetPrintFarm.Services
                     {
                         _jobQueue.Enqueue(job);
                     }
+
+                    job = null;
                     continue;
                 }
 

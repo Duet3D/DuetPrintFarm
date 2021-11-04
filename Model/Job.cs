@@ -73,7 +73,7 @@ namespace DuetPrintFarm.Model
         /// Indicates if the job is ready to be printed
         /// </summary>
         [JsonIgnore]
-        public bool IsReadyToPrint { get => string.IsNullOrEmpty(Hostname) && !Paused && TimeCompleted == null; }
+        public bool IsReadyToPrint { get => string.IsNullOrEmpty(Hostname) && !Paused && !Cancelled && TimeCompleted == null; }
 
         /// <summary>
         /// Reset this instance so it can be printed again
