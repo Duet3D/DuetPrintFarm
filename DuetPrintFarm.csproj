@@ -9,6 +9,7 @@
     <PackageProjectUrl>https://github.com/Duet3D/DuetPrintFarm</PackageProjectUrl>
     <RepositoryUrl>https://github.com/Duet3D/DuetPrintFarm.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
+    <Version>1.1.1</Version>
   </PropertyGroup>
 
   <ItemGroup>

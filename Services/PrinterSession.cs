@@ -285,9 +285,13 @@ namespace DuetPrintFarm.Services
                                 Printer.Online = isOnline;
                                 _logger.LogInformation("[{0}] Printer is now {1}", Printer.Name, isOnline ? "online" : "offline");
 
-                                if (_job != null && !isOnline)
+                                if (!isOnline)
                                 {
-                                    _machineDisconnectedCTS.Cancel();
+                                    Printer.JobFile = null;
+                                    if (_job != null)
+                                    {
+                                        _machineDisconnectedCTS.Cancel();
+                                    }
                                 }
                             }
                         }
@@ -496,7 +500,8 @@ namespace DuetPrintFarm.Services
                     {
                         _jobQueue.Enqueue(nextJob ?? job);
                     }
-                    nextJob = null;
+                    job = nextJob = null;
+                    wasPrinting = false;
 
                     // Wait a moment
                     await Task.Delay(2000, _disposedTCS.Token);
