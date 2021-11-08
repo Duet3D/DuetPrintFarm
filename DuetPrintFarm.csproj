@@ -17,21 +17,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="DuetHttpClient" Version="3.4.0-b6" />
     <PackageReference Include="Nito.AsyncEx" Version="5.1.2" />
   </ItemGroup>
 
   <ItemGroup>
     <Folder Include="gcodes\" />
     <Folder Include="wwwroot\" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Reference Include="DuetAPI">
-      <HintPath>..\DuetSoftwareFramework\src\DuetAPI\bin\Debug\net5.0\DuetAPI.dll</HintPath>
-    </Reference>
-    <Reference Include="DuetHttpClient">
-      <HintPath>..\DuetSoftwareFramework\src\DuetHttpClient\bin\Debug\net5.0\DuetHttpClient.dll</HintPath>
-    </Reference>
   </ItemGroup>
 
 </Project>
