@@ -17,7 +17,7 @@
     },
     "DuetPrintFarm": {
       "commandName": "Project",
-      "workingDirectory": "C:\\Users\\Christian\\source\\repos\\DuetPrintFarm",
+      "workingDirectory": "C:\\Users\\ch-ha\\source\\repos\\DuetPrintFarm",
       "launchBrowser": true,
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development"

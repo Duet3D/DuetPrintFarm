@@ -30,7 +30,7 @@ namespace DuetPrintFarm.Model
         public string Filename { get; private set; }
 
         /// <summary>
-        /// Hostname of the machine where this file is or was printed
+        /// Hostname of the machine where this file is or was printed or null if not applicable
         /// </summary>
         public string Hostname { get; set; }
 
@@ -40,7 +40,7 @@ namespace DuetPrintFarm.Model
         public DateTime TimeCreated { get; private set; }
 
         /// <summary>
-        /// Progress label
+        /// Progress label or null if not present
         /// </summary>
         public string ProgressText { get; set; }
 

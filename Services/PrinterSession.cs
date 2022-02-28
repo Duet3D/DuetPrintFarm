@@ -37,8 +37,9 @@ namespace DuetPrintFarm.Services
         /// <summary>
         /// Constructor of this class
         /// </summary>
-        /// <param name="hostname">Hostname of this printer</param>
+        /// <param name="printer">Printer instance of this session</param>
         /// <param name="logger">Logger instance</param>
+        /// <param name="jobQueue">Global job queue</param>
         public PrinterSession(Printer printer, ILogger<PrinterSession> logger, IJobQueue jobQueue)
         {
             Printer = printer;
@@ -58,14 +59,14 @@ namespace DuetPrintFarm.Services
         private DuetHttpSession _httpSession;
 
         /// <summary>
-        /// CTS to be triggered when this instance is disposed
+        /// CTS to be triggered when this instance is _disposed
         /// </summary>
-        private readonly CancellationTokenSource _disposedTCS = new();
+        private readonly CancellationTokenSource _disposedCts = new();
 
         /// <summary>
-        /// Whether this instance is disposed
+        /// Whether this instance is _disposed
         /// </summary>
-        private bool disposed;
+        private bool _disposed;
 
         /// <summary>
         /// Dispose this instance asynchronously
@@ -73,21 +74,21 @@ namespace DuetPrintFarm.Services
         /// <returns>Asynchronous task</returns>
         public async ValueTask DisposeAsync()
         {
-            if (disposed)
+            if (_disposed)
             {
                 return;
             }
-            disposed = true;
+            _disposed = true;
 
-            _machineDisconnectedCTS.Cancel();
-            _disposedTCS.Cancel();
+            _machineDisconnectedCts.Cancel();
+            _disposedCts.Cancel();
             if (_httpSession != null)
             {
                 await _httpSession.DisposeAsync();
             }
 
-            _machineDisconnectedCTS.Dispose();
-            _disposedTCS.Dispose();
+            _machineDisconnectedCts.Dispose();
+            _disposedCts.Dispose();
         }
 
         /// <summary>
@@ -113,7 +114,7 @@ namespace DuetPrintFarm.Services
         /// <summary>
         /// Manual reset event to be triggered when the machine has disconnected
         /// </summary>
-        private CancellationTokenSource  _machineDisconnectedCTS = new();
+        private CancellationTokenSource  _machineDisconnectedCts = new();
 
         /// <summary>
         /// Method to keep the session 
@@ -126,13 +127,13 @@ namespace DuetPrintFarm.Services
             {
                 try
                 {
-                    _httpSession = await DuetHttpSession.ConnectAsync(new Uri($"http://{Printer.Hostname}"), cancellationToken: _disposedTCS.Token);
-                    await _httpSession.WaitForModelUpdate(_disposedTCS.Token);
+                    _httpSession = await DuetHttpSession.ConnectAsync(new Uri($"http://{Printer.Hostname}"), cancellationToken: _disposedCts.Token);
+                    await _httpSession.WaitForModelUpdate(_disposedCts.Token);
                 }
                 catch (Exception e) when (e is not OperationCanceledException)
                 {
                     _logger.LogWarning("[{0}] Failed to connect to printer: {1}", Printer.Name, e.Message);
-                    await Task.Delay(2000, _disposedTCS.Token);
+                    await Task.Delay(2000, _disposedCts.Token);
                 }
             }
             while (_httpSession == null);
@@ -290,7 +291,7 @@ namespace DuetPrintFarm.Services
                                     Printer.JobFile = null;
                                     if (_job != null)
                                     {
-                                        _machineDisconnectedCTS.Cancel();
+                                        _machineDisconnectedCts.Cancel();
                                     }
                                 }
                             }
@@ -315,23 +316,35 @@ namespace DuetPrintFarm.Services
                 };
             }
 
-            bool wasPrinting = false;
-            Job job = null, nextJob = null;
+            // Check if there is a leftover print job due to a restart of this application
+            await _jobQueue.WaitToBeReady(_disposedCts.Token);
+
+            Job job, nextJob = null;
+            using (await _jobQueue.LockAsync(_disposedCts.Token))
+            {
+                job = _jobQueue.FindJob(Printer.Hostname);
+            }
+
+            // Start processing the global print queue
+            bool wasPrinting = job != null, jobResumed = wasPrinting;
             do
             {
-                // Wait for the machine to be ready
-                await _machineActive.WaitAsync(_disposedTCS.Token);
-                await _machineIdle.WaitAsync(_disposedTCS.Token);
-
-                // Try to get the next job
-                if (job == null)
+                // Wait for the machine to be active and ready
+                await _machineActive.WaitAsync(_disposedCts.Token);
+                if (!jobResumed)
                 {
-                    using (await _jobQueue.LockAsync())
+                    await _machineIdle.WaitAsync(_disposedCts.Token);
+
+                    // Try to get the next job
+                    if (job == null)
                     {
-                        job = await _jobQueue.DequeueAsync(_disposedTCS.Token);
-                        lock (job)
+                        using (await _jobQueue.LockAsync())
                         {
-                            job.Hostname = Printer.Hostname;
+                            job = await _jobQueue.DequeueAsync(_disposedCts.Token);
+                            lock (job)
+                            {
+                                job.Hostname = Printer.Hostname;
+                            }
                         }
                     }
                 }
@@ -344,7 +357,7 @@ namespace DuetPrintFarm.Services
                     {
                         job.Cancelled = true;
                     }
-                    using (await _jobQueue.LockAsync(_disposedTCS.Token))
+                    using (await _jobQueue.LockAsync(_disposedCts.Token))
                     {
                         _jobQueue.PrintFinished(job);
                     }
@@ -363,7 +376,7 @@ namespace DuetPrintFarm.Services
                 if (isSuspended)
                 {
                     _logger.LogDebug("[{0}] Attempted to get print job {1} even though the printer is suspended", Printer.Name, job.Filename);
-                    using (await _jobQueue.LockAsync(_disposedTCS.Token))
+                    using (await _jobQueue.LockAsync(_disposedCts.Token))
                     {
                         _jobQueue.Enqueue(job);
                     }
@@ -385,25 +398,30 @@ namespace DuetPrintFarm.Services
 
                 try
                 {
-                    // Upload the file
-                    _logger.LogDebug("[{0}] Uploading file {0}", Printer.Name, job.Filename);
-                    using (FileStream fs = new(job.AbsoluteFilename, FileMode.Open, FileAccess.Read))
+                    if (!jobResumed)
                     {
-                        await _httpSession.Upload($"0:/gcodes/{job.Filename}", fs, File.GetLastWriteTime(job.AbsoluteFilename));
-                    }
-                    _logger.LogDebug("[{0}] Upload complete, running queue macro file and starting print", Printer.Name);
+                        // Upload the file
+                        _logger.LogDebug("[{0}] Uploading file {0}", Printer.Name, job.Filename);
+                        await using (FileStream fs = new(job.AbsoluteFilename, FileMode.Open, FileAccess.Read))
+                        {
+                            await _httpSession.Upload($"0:/gcodes/{job.Filename}", fs, File.GetLastWriteTime(job.AbsoluteFilename));
+                        }
 
-                    // Run the corresponding macro file
-                    lock (job)
-                    {
-                        job.ProgressText = wasPrinting ? "starting next" : "starting";
-                    }
-                    await SendCode($"M98 P\"{(wasPrinting ? "queue-intermediate.g" : "queue-start.g")}\"");
-                    await WaitForIdle();
+                        _logger.LogDebug("[{0}] Upload complete, running queue macro file and starting print", Printer.Name);
 
-                    // Start the actual print file
-                    await SendCode($"M32 \"{job.Filename}\"");
-                    wasPrinting = true;
+                        // Run the corresponding macro file
+                        lock (job)
+                        {
+                            job.ProgressText = wasPrinting ? "starting next" : "starting";
+                        }
+
+                        await SendCode($"M98 P\"{(wasPrinting ? "queue-intermediate.g" : "queue-start.g")}\"");
+                        await WaitForIdle();
+
+                        // Start the actual print file
+                        await SendCode($"M32 \"{job.Filename}\"");
+                        wasPrinting = true;
+                    }
 
                     // Wait for the machine to start printing and for it to finish
                     await WaitForPrintStart();
@@ -421,7 +439,7 @@ namespace DuetPrintFarm.Services
                     }
                     if (!isSuspended)
                     {
-                        using (await _jobQueue.LockAsync(_disposedTCS.Token))
+                        using (await _jobQueue.LockAsync(_disposedCts.Token))
                         {
                             if (_jobQueue.TryDequeue(out nextJob))
                             {
@@ -470,7 +488,7 @@ namespace DuetPrintFarm.Services
                     {
                         _job = null;
                     }
-                    using (await _jobQueue.LockAsync(_disposedTCS.Token))
+                    using (await _jobQueue.LockAsync(_disposedCts.Token))
                     {
                         _jobQueue.PrintFinished(job);
                     }
@@ -486,7 +504,7 @@ namespace DuetPrintFarm.Services
                     {
                         _logger.LogError("[{0}] Printer has gone offline unexpectedly, enqueing job {1} again", Printer.Name, job.Filename);
                     }
-                    else if (!disposed)
+                    else if (!_disposed)
                     {
                         _logger.LogError(e, "[{0}] Failed to print job {1}, enqueuing it again", Printer.Name, job.Filename);
                     }
@@ -496,7 +514,7 @@ namespace DuetPrintFarm.Services
                     {
                         _job = null;
                     }
-                    using (await _jobQueue.LockAsync(_disposedTCS.Token))
+                    using (await _jobQueue.LockAsync(_disposedCts.Token))
                     {
                         _jobQueue.Enqueue(nextJob ?? job);
                     }
@@ -504,14 +522,16 @@ namespace DuetPrintFarm.Services
                     wasPrinting = false;
 
                     // Wait a moment
-                    await Task.Delay(2000, _disposedTCS.Token);
+                    await Task.Delay(2000, _disposedCts.Token);
 
                     // Renew the cancellation token
-                    _machineDisconnectedCTS.Dispose();
-                    _machineDisconnectedCTS = new();
+                    _machineDisconnectedCts.Dispose();
+                    _machineDisconnectedCts = new();
                 }
+
+                jobResumed = false;
             }
-            while (!disposed);
+            while (!_disposed);
         }
 
         /// <summary>
@@ -523,9 +543,9 @@ namespace DuetPrintFarm.Services
         {
             try
             {
-                await _machineIdle.WaitAsync(_machineDisconnectedCTS.Token);
+                await _machineIdle.WaitAsync(_machineDisconnectedCts.Token);
             }
-            catch (OperationCanceledException) when (!disposed)
+            catch (OperationCanceledException) when (!_disposed)
             {
                 throw new IOException("Printer has gone offline");
             }
@@ -540,11 +560,11 @@ namespace DuetPrintFarm.Services
         {
             try
             {
-                await _machinePrinting.WaitAsync(_machineDisconnectedCTS.Token);
+                await _machinePrinting.WaitAsync(_machineDisconnectedCts.Token);
             }
             catch (OperationCanceledException)
             {
-                if (_machineDisconnectedCTS.IsCancellationRequested)
+                if (_machineDisconnectedCts.IsCancellationRequested)
                 {
                     throw new IOException("Printer has gone offline");
                 }
@@ -565,12 +585,11 @@ namespace DuetPrintFarm.Services
         /// Send a code and throw an exception if it fails
         /// </summary>
         /// <param name="code">Code to send</param>
-        /// <param name="cancellationToken">Cancellation token</param>
         /// <returns>Asynchronous task</returns>
         /// <exception cref="Exception">Code generated an error</exception>
         private async Task SendCode(string code)
         {
-            string reply = await _httpSession.SendCode(code, _disposedTCS.Token);
+            string reply = await _httpSession.SendCode(code, _disposedCts.Token);
             if (reply.StartsWith("Error:"))
             {
                 _logger.LogError("[{0}] {1} => {2}", Printer.Name, code, reply.TrimEnd());
@@ -594,8 +613,7 @@ namespace DuetPrintFarm.Services
         {
             lock (_httpSession.Model)
             {
-                if (_httpSession.Model.State.Status == MachineStatus.Pausing ||
-                    _httpSession.Model.State.Status == MachineStatus.Paused)
+                if (_httpSession.Model.State.Status is MachineStatus.Pausing or MachineStatus.Paused)
                 {
                     // Already paused
                     return true;
@@ -621,8 +639,7 @@ namespace DuetPrintFarm.Services
         {
             lock (_httpSession.Model)
             {
-                if (_httpSession.Model.State.Status == MachineStatus.Resuming ||
-                    _httpSession.Model.State.Status == MachineStatus.Processing)
+                if (_httpSession.Model.State.Status is MachineStatus.Resuming or MachineStatus.Processing)
                 {
                     // Already resumed
                     return true;
@@ -649,8 +666,7 @@ namespace DuetPrintFarm.Services
         {
             lock (_httpSession.Model)
             {
-                if (_httpSession.Model.State.Status == MachineStatus.Cancelling ||
-                    _httpSession.Model.State.Status == MachineStatus.Idle)
+                if (_httpSession.Model.State.Status is MachineStatus.Cancelling or MachineStatus.Idle)
                 {
                     // Already cancelled
                     return true;

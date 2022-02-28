@@ -1,4 +1,5 @@
-﻿using DuetPrintFarm.Singletons;
+﻿using System;
+using DuetPrintFarm.Singletons;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -53,13 +54,21 @@ namespace DuetPrintFarm.Services
         /// <returns>Asynchronous task</returns>
         public async Task StartAsync(CancellationToken cancellationToken)
         {
-            if (File.Exists(JobQueueFile))
+            try
             {
-                using (await _jobQueue.LockAsync(cancellationToken))
+                if (File.Exists(JobQueueFile))
                 {
-                    await _jobQueue.LoadFromFileAsync(JobQueueFile, cancellationToken);
+                    using (await _jobQueue.LockAsync(cancellationToken))
+                    {
+                        await _jobQueue.LoadFromFileAsync(JobQueueFile, cancellationToken);
+                    }
+
+                    _logger.LogInformation("Jobs loaded from {0}", JobQueueFile);
                 }
-                _logger.LogInformation("Jobs loaded from {0}", JobQueueFile);
+            }
+            finally
+            {
+                _jobQueue.SetReady();
             }
         }
 

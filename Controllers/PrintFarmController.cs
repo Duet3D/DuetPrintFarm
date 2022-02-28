@@ -99,7 +99,7 @@ namespace DuetPrintFarm.Controllers
                 resolvedPath = Path.Combine(GCodesDirectory, filename);
 
                 // Write file
-                using (FileStream stream = new(resolvedPath, FileMode.Create, FileAccess.Write))
+                await using (FileStream stream = new(resolvedPath, FileMode.Create, FileAccess.Write))
                 {
                     await Request.Body.CopyToAsync(stream);
                 }

@@ -169,7 +169,7 @@ namespace DuetPrintFarm.Singletons
         /// <returns>Asynchronous task</returns>
         public async Task SaveToFileAsync(string filename, CancellationToken cancellationToken = default)
         {
-            using FileStream fs = new(filename, FileMode.Create, FileAccess.Write);
+            await using FileStream fs = new(filename, FileMode.Create, FileAccess.Write);
             await JsonSerializer.SerializeAsync(fs, _printers, cancellationToken: cancellationToken);
         }
 
@@ -181,7 +181,7 @@ namespace DuetPrintFarm.Singletons
         /// <returns>Asynchronous task</returns>
         public async Task LoadFromFileAsync(string filename, CancellationToken cancellationToken = default)
         {
-            using (FileStream fs = new(filename, FileMode.Open, FileAccess.Read))
+            await using (FileStream fs = new(filename, FileMode.Open, FileAccess.Read))
             {
                 _printers = await JsonSerializer.DeserializeAsync<List<Printer>>(fs, cancellationToken: cancellationToken);
             }

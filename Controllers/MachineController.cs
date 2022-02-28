@@ -37,6 +37,7 @@ namespace DuetPrintFarm.Controllers
         /// </summary>
         /// <param name="configuration">Launch configuration</param>
         /// <param name="logger">Logger instance</param>
+        /// <param name="jobQueue">Job queue instance</param>
         public MachineController(IConfiguration configuration, ILogger<MachineController> logger, IJobQueue jobQueue)
         {
             _configuration = configuration;
@@ -73,8 +74,7 @@ namespace DuetPrintFarm.Controllers
             }
 
             // Return combined path
-            string gcodesDirectory = _configuration.GetValue<string>("gcodesDirectory");
-            return Path.Combine(gcodesDirectory, path);
+            return Path.Combine(GCodesDirectory, path);
         }
 
         #region File requests
@@ -92,6 +92,8 @@ namespace DuetPrintFarm.Controllers
         [HttpGet("file/{*filename}")]
         public IActionResult DownloadFile(string filename)
         {
+            filename = HttpUtility.UrlDecode(filename);
+
             string resolvedPath = "n/a";
             try
             {
@@ -130,6 +132,8 @@ namespace DuetPrintFarm.Controllers
         [HttpPut("file/{*filename}")]
         public async Task<IActionResult> UploadFile(string filename)
         {
+            filename = HttpUtility.UrlDecode(filename);
+
             string resolvedPath = "n/a";
             try
             {
@@ -143,7 +147,7 @@ namespace DuetPrintFarm.Controllers
                 }
 
                 // Write file
-                using (FileStream stream = new(resolvedPath, FileMode.Create, FileAccess.Write))
+                await using (FileStream stream = new(resolvedPath, FileMode.Create, FileAccess.Write))
                 {
                     await Request.Body.CopyToAsync(stream);
                 }

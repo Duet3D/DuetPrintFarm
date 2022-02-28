@@ -24,6 +24,17 @@ namespace DuetPrintFarm.Singletons
         public AwaitableDisposable<IDisposable> LockAsync(CancellationToken cancellationToken = default);
 
         /// <summary>
+        /// Wait for everything to be ready
+        /// </summary>
+        /// <returns>Asynchronous task</returns>
+        public Task WaitToBeReady(CancellationToken cancellationToken);
+
+        /// <summary>
+        /// Called to flag full initialization
+        /// </summary>
+        public void SetReady();
+
+        /// <summary>
         /// Get all jobs as JSON
         /// </summary>
         /// <returns>JSON array</returns>
@@ -51,6 +62,13 @@ namespace DuetPrintFarm.Singletons
         /// <param name="job">Job to enqueue</param>
         /// <returns>Asynchronous task</returns>
         public void Enqueue(Job job);
+
+        /// <summary>
+        /// Find a job that is still mapped to this machine
+        /// </summary>
+        /// <param name="hostname"></param>
+        /// <returns>Job or null</returns>
+        public Job FindJob(string hostname);
 
         /// <summary>
         /// Try to dequeue a pending job returning true on success
@@ -132,6 +150,7 @@ namespace DuetPrintFarm.Singletons
         public event JobEvent OnCancelJob;
     }
 
+
     /// <summary>
     /// Singleton class for providing the job queue
     /// </summary>
@@ -162,6 +181,22 @@ namespace DuetPrintFarm.Singletons
         /// <param name="cancellationToken">Cancellation token</param>
         /// <returns>Disposable lock</returns>
         public AwaitableDisposable<IDisposable> LockAsync(CancellationToken cancellationToken = default) => _monitor.EnterAsync(cancellationToken);
+
+        /// <summary>
+        /// Event to be set when everything is ready
+        /// </summary>
+        private readonly AsyncManualResetEvent _readyEvent = new();
+
+        /// <summary>
+        /// Wait for everything to be ready
+        /// </summary>
+        /// <returns>Asynchronous task</returns>
+        public Task WaitToBeReady(CancellationToken cancellationToken) => _readyEvent.WaitAsync(cancellationToken);
+
+        /// <summary>
+        /// Mark everything ready
+        /// </summary>
+        public void SetReady() => _readyEvent.Set();
 
         /// <summary>
         /// List of all queued and running jobs
@@ -204,7 +239,7 @@ namespace DuetPrintFarm.Singletons
         /// <returns>Asynchronous task</returns>
         public async Task SaveToFileAsync(string filename, CancellationToken cancellationToken = default)
         {
-            using FileStream fs = new(filename, FileMode.Create, FileAccess.Write);
+            await using FileStream fs = new(filename, FileMode.Create, FileAccess.Write);
             await JsonSerializer.SerializeAsync(fs, _jobList, cancellationToken: cancellationToken);
         }
 
@@ -216,14 +251,14 @@ namespace DuetPrintFarm.Singletons
         /// <returns>Asynchronous task</returns>
         public async Task LoadFromFileAsync(string filename, CancellationToken cancellationToken = default)
         {
-            using (FileStream fs = new(filename, FileMode.Open, FileAccess.Read))
+            await using (FileStream fs = new(filename, FileMode.Open, FileAccess.Read))
             {
                 _jobList = await JsonSerializer.DeserializeAsync<List<Job>>(fs, cancellationToken: cancellationToken);
             }
 
             foreach (Job job in _jobList)
             {
-                if (job.TimeCompleted == null)
+                if (job.Hostname == null && job.TimeCompleted == null)
                 {
                     job.Reset();
                     if (job.IsReadyToPrint)
@@ -289,6 +324,23 @@ namespace DuetPrintFarm.Singletons
             }
 
             _monitor.Pulse();
+        }
+
+        /// <summary>
+        /// Find a job that is still mapped to this machine
+        /// </summary>
+        /// <param name="hostname"></param>
+        /// <returns>Job or null</returns>
+        public Job FindJob(string hostname)
+        {
+            foreach (Job item in _jobList)
+            {
+                if (hostname == item.Hostname && !item.Paused && !item.Cancelled && item.TimeCompleted == null)
+                {
+                    return item;
+                }
+            }
+            return null;
         }
 
         /// <summary>

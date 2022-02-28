@@ -57,6 +57,8 @@ namespace DuetPrintFarm.Services
         /// </summary>
         /// <param name="configuration">App configuration</param>
         /// <param name="logger">Logger instance</param>
+        /// <param name="provider">Service provider</param>
+        /// <param name="jobQueue">Job queue</param>
         /// <param name="printerList">List of configured printers</param>
         public PrinterManager(IConfiguration configuration, ILogger<PrinterManager> logger, IServiceProvider provider, IJobQueue jobQueue, IPrinterList printerList)
         {
@@ -72,8 +74,9 @@ namespace DuetPrintFarm.Services
         /// </summary>
         /// <param name="cancellationToken">Cancellation token</param>
         /// <returns>Asynchronous task</returns>
-        public async Task StartAsync(CancellationToken cancellationToken)
+        public Task StartAsync(CancellationToken cancellationToken)
         {
+            // Map events
             _jobQueue.OnPauseJob += PauseJob;
             _jobQueue.OnResumeJob += ResumeJob;
             _jobQueue.OnCancelJob += CancelJob;
@@ -82,15 +85,25 @@ namespace DuetPrintFarm.Services
             _printerList.OnPrinterResumed += PrinterResumed;
             _printerList.OnPrinterRemoved += PrinterRemoved;
 
-            // Load the configured printers if possible
-            if (File.Exists(PrintersFile))
+            // Wait for the job list to be initialized
+            _ = _jobQueue.WaitToBeReady(cancellationToken).ContinueWith(async task =>
             {
-                using (await _printerList.LockAsync(cancellationToken))
+                await task;
+
+                // Load the configured printers if possible
+                if (File.Exists(PrintersFile))
                 {
-                    await _printerList.LoadFromFileAsync(PrintersFile, cancellationToken);
+                    using (await _printerList.LockAsync(cancellationToken))
+                    {
+                        await _printerList.LoadFromFileAsync(PrintersFile, cancellationToken);
+                    }
+
+                    _logger.LogInformation("Printers loaded from {0}", PrintersFile);
                 }
-                _logger.LogInformation("Printers loaded from {0}", PrintersFile);
-            }
+            }, TaskContinuationOptions.RunContinuationsAsynchronously);
+
+            // Done
+            return Task.CompletedTask;
         }
 
         /// <summary>
