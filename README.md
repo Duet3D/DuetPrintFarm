@@ -35,3 +35,6 @@ For most configurations this macro file should show a message prompt using `M291
 - In case no more jobs are available when the print has finished, `queue-end.g` is executed.
 This file may be used to turn off the heaters and to display a final prompt asking the user to remove the printed object.
 
+## Bug reports
+
+Please use the [forum](https://forum.duet3d.com) for support requests or the [issues](https://github.com/Duet3D/DuetPrintFarm/issues) page for feature requests and bug reports.
