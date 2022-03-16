@@ -1,6 +1,6 @@
 # DuetPrintFarm
 
-This is the backend application for print farms running Duet boards written in C# / ASP.NET 5.
+This is the backend application for print farms running Duet boards written in C# / ASP.NET 6.
 It is licensed under the terms of the GPLv3.
 
 ## Configuration files

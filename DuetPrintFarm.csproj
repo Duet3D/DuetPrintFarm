@@ -9,7 +9,7 @@
     <PackageProjectUrl>https://github.com/Duet3D/DuetPrintFarm</PackageProjectUrl>
     <RepositoryUrl>https://github.com/Duet3D/DuetPrintFarm.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
-    <Version>1.2.1</Version>
+    <Version>3.4.0</Version>
   </PropertyGroup>
 
   <ItemGroup>
@@ -19,7 +19,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="DuetHttpClient" Version="3.4.0-rc2" />
+    <PackageReference Include="DuetHttpClient" Version="3.4.0" />
     <PackageReference Include="Nito.AsyncEx" Version="5.1.2" />
   </ItemGroup>
 
